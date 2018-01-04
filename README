@@ -1,0 +1,35 @@
+This repository contains formal TLA+ specs of different algorithms used
+in the Linux kernel. So far it only contains asidalloc.tla (see below).
+
+The TLA+ Tools need to be installed (together with a Java runtime):
+
+  https://lamport.azurewebsites.net/tla/tools.html (pre-built)
+
+or:
+
+  https://github.com/tlaplus/tlaplus/tree/master/tlatools (source)
+
+The graphical TLA Toolbox is not required.
+
+CLASSPATH in check.sh needs to point to the TLA+ Tools installation
+directory.
+
+
+asidalloc.tla
+-------------
+
+Model of the ASID allocator used by the arm64 kernel port (and arm):
+arch/arm64/mm/context.c
+
+To run a full check of the current configuration:
+
+  ./check.sh asidalloc
+
+Note that, depending on your hardware, it may take over two days to
+complete in the current configuration. You can reduce the number of
+tasks in asidalloc.cfg (4 tasks should complete in less than an hour).
+
+To run in simulation mode (quicker at finding bugs but it may not
+explore all corner cases):
+
+  ./check.sh asidalloc -simulate -depth 300
