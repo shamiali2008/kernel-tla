@@ -40,3 +40,9 @@ qrwlock.tla
 Model of the queued read-write locks implemented in the kernel. The
 model is generic and avoids specific architecture instructions (e.g.
 LDXR/STXR or LDADD as on arm64).
+
+ticketlock.tla
+--------------
+
+Model of the ticket spinlock implementation as on arm64 but avoiding
+specific arm64 instructions.
