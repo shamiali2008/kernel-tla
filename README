@@ -46,3 +46,10 @@ ticketlock.tla
 
 Model of the ticket spinlock implementation as on arm64 but avoiding
 specific arm64 instructions.
+
+ctxsw.tla
+---------
+
+Model of the Linux kernel context_switch() function together with
+exit_mm() and exec_mmap(), aimed at checking the mm_struct.mm_users and
+mm_count handling.
