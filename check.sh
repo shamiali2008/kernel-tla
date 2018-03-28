@@ -13,5 +13,8 @@ alias tla2tex="java tla2tex.TLA"
 SPEC=$1
 shift
 
-pcal $SPEC | tee $SPEC.log
-tlc -workers $(nproc) -cleanup $@ $SPEC | tee -a $SPEC.log
+grep -q -e "--algorithm" $SPEC.tla && pcal -nocfg $SPEC.tla | tee $SPEC.log
+if grep -q -e "^\s*ProcessEnabled(self)\s*==" $SPEC.tla; then
+	sed -i -e 's%pc\[self\] = ".*"$%& /\\\ ProcessEnabled(self)%' $SPEC.tla
+fi
+tlc -workers $(nproc) -cleanup $@ $SPEC.tla | tee -a $SPEC.log
