@@ -53,3 +53,9 @@ ctxsw.tla
 Model of the Linux kernel context_switch() function together with
 exit_mm() and exec_mmap(), aimed at checking the mm_struct.mm_users and
 mm_count handling.
+
+qspinlock.tla
+-------------
+
+Model of the Linux queued spinlock implementation, modified to avoid
+cmpxchg() loops which cannot guarantee forward progress.
