@@ -80,13 +80,10 @@ rl1:	lock.cnts.readers := lock.cnts.readers + 1;
 	if (~WMASK(lock.cnts))
 		return;
 	\* slow path
-rl2:	either {
+rl2:	if (INTERRUPTS) {
 		\* in interrupt
-		await INTERRUPTS;
-		await ~WLOCKED(lock.cnts);
+rl21:		await ~WLOCKED(lock.cnts);
 		return;
-	} or {
-		skip;
 	};
 rl3:	lock.cnts.readers := lock.cnts.readers - 1;
 	\* strong fairness, spin_lock() expected to make progress
@@ -258,14 +255,16 @@ rl1(self) == /\ pc[self] = "rl1"
              /\ UNCHANGED << ret_read_tl, ret_write_tl >>
 
 rl2(self) == /\ pc[self] = "rl2"
-             /\ \/ /\ INTERRUPTS
-                   /\ ~WLOCKED(lock.cnts)
-                   /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
-                   /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                \/ /\ TRUE
-                   /\ pc' = [pc EXCEPT ![self] = "rl3"]
-                   /\ stack' = stack
-             /\ UNCHANGED << lock, ret_read_tl, ret_write_tl >>
+             /\ IF INTERRUPTS
+                   THEN /\ pc' = [pc EXCEPT ![self] = "rl21"]
+                   ELSE /\ pc' = [pc EXCEPT ![self] = "rl3"]
+             /\ UNCHANGED << lock, ret_read_tl, ret_write_tl, stack >>
+
+rl21(self) == /\ pc[self] = "rl21"
+              /\ ~WLOCKED(lock.cnts)
+              /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
+              /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
+              /\ UNCHANGED << lock, ret_read_tl, ret_write_tl >>
 
 rl3(self) == /\ pc[self] = "rl3"
              /\ lock' = [lock EXCEPT !.cnts.readers = lock.cnts.readers - 1]
@@ -294,8 +293,9 @@ rl7(self) == /\ pc[self] = "rl7"
              /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
              /\ UNCHANGED << ret_read_tl, ret_write_tl >>
 
-queued_read_lock(self) == rl1(self) \/ rl2(self) \/ rl3(self) \/ rl4(self)
-                             \/ rl5(self) \/ rl6(self) \/ rl7(self)
+queued_read_lock(self) == rl1(self) \/ rl2(self) \/ rl21(self) \/ rl3(self)
+                             \/ rl4(self) \/ rl5(self) \/ rl6(self)
+                             \/ rl7(self)
 
 ru1(self) == /\ pc[self] = "ru1"
              /\ lock' = [lock EXCEPT !.cnts.readers = lock.cnts.readers - 1]
