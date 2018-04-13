@@ -5,7 +5,8 @@
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS CPUS,
-	  MAX_NODES
+	  MAX_NODES,
+	  PENDING_LOOPS
 
 ASSUME MAX_NODES \in Nat \ {0}
 
@@ -111,9 +112,16 @@ stl1:	if (qspinlock[lock] = ZERO_VAL) {
 }
 
 procedure spin_lock_slowpath(lock, val)
-	variables old, next, prev, node, idx;
+	variables old, next, prev, node, idx, cnt = PENDING_LOOPS;
 {
-sp1:	\* if we observe any contention, queue
+sp1:	\* wait for in-progress pending->locked hand-overs (bounded)
+	if (val = PENDING_VAL) {
+sp1_1:		while (qspinlock[lock] = PENDING_VAL /\ cnt # 0)
+			cnt := cnt - 1;
+		val := qspinlock[lock];
+	};
+
+sp1_2:	\* if we observe any contention, queue
 	if (NEG_LOCKED_MASK(val))
 		goto queue;
 
@@ -207,10 +215,10 @@ t2:		priority_exit(priority_level);
 }
 } *)
 \* BEGIN TRANSLATION
-\* Procedure variable val of procedure spin_lock at line 87 col 18 changed to val_
-\* Parameter lock of procedure spin_lock at line 86 col 21 changed to lock_
-\* Parameter lock of procedure spin_unlock at line 96 col 23 changed to lock_s
-\* Parameter lock of procedure spin_trylock at line 102 col 24 changed to lock_sp
+\* Procedure variable val of procedure spin_lock at line 88 col 18 changed to val_
+\* Parameter lock of procedure spin_lock at line 87 col 21 changed to lock_
+\* Parameter lock of procedure spin_unlock at line 97 col 23 changed to lock_s
+\* Parameter lock of procedure spin_trylock at line 103 col 24 changed to lock_sp
 CONSTANT defaultInitValue
 VARIABLES qspinlock, mcs_lock, priority, ret_trylock, pc, stack
 
@@ -254,10 +262,10 @@ LockAll == \A p \in CPUS : \E n \in 1..MAX_NODES :
 Perms   == Permutations(CPUS)
 
 VARIABLES lock_, val_, lock_s, lock_sp, lock, val, old, next, prev, node, idx, 
-          priority_level
+          cnt, priority_level
 
 vars == << qspinlock, mcs_lock, priority, ret_trylock, pc, stack, lock_, val_, 
-           lock_s, lock_sp, lock, val, old, next, prev, node, idx, 
+           lock_s, lock_sp, lock, val, old, next, prev, node, idx, cnt, 
            priority_level >>
 
 ProcSet == (THREADS)
@@ -285,6 +293,7 @@ Init == (* Global variables *)
         /\ prev = [ self \in ProcSet |-> defaultInitValue]
         /\ node = [ self \in ProcSet |-> defaultInitValue]
         /\ idx = [ self \in ProcSet |-> defaultInitValue]
+        /\ cnt = [ self \in ProcSet |-> PENDING_LOOPS]
         (* Process thread *)
         /\ priority_level = [self \in THREADS |-> defaultInitValue]
         /\ stack = [self \in ProcSet |-> << >>]
@@ -299,7 +308,7 @@ sl1(self) == /\ pc[self] = "sl1" /\ ProcessEnabled(self)
              /\ pc' = [pc EXCEPT ![self] = "sl2"]
              /\ UNCHANGED << mcs_lock, priority, ret_trylock, stack, lock_, 
                              lock_s, lock_sp, lock, val, old, next, prev, node, 
-                             idx, priority_level >>
+                             idx, cnt, priority_level >>
 
 sl2(self) == /\ pc[self] = "sl2" /\ ProcessEnabled(self)
              /\ IF val_[self] = ZERO_VAL
@@ -311,7 +320,7 @@ sl2(self) == /\ pc[self] = "sl2" /\ ProcessEnabled(self)
                         /\ UNCHANGED << stack, lock_, val_ >>
              /\ UNCHANGED << qspinlock, mcs_lock, priority, ret_trylock, 
                              lock_s, lock_sp, lock, val, old, next, prev, node, 
-                             idx, priority_level >>
+                             idx, cnt, priority_level >>
 
 sl3(self) == /\ pc[self] = "sl3" /\ ProcessEnabled(self)
              /\ /\ lock' = [lock EXCEPT ![self] = lock_[self]]
@@ -322,6 +331,7 @@ sl3(self) == /\ pc[self] = "sl3" /\ ProcessEnabled(self)
                                                          prev      |->  prev[self],
                                                          node      |->  node[self],
                                                          idx       |->  idx[self],
+                                                         cnt       |->  cnt[self],
                                                          lock      |->  lock[self],
                                                          val       |->  val[self] ] >>
                                                      \o Tail(stack[self])]
@@ -332,6 +342,7 @@ sl3(self) == /\ pc[self] = "sl3" /\ ProcessEnabled(self)
              /\ prev' = [prev EXCEPT ![self] = defaultInitValue]
              /\ node' = [node EXCEPT ![self] = defaultInitValue]
              /\ idx' = [idx EXCEPT ![self] = defaultInitValue]
+             /\ cnt' = [cnt EXCEPT ![self] = PENDING_LOOPS]
              /\ pc' = [pc EXCEPT ![self] = "sp1"]
              /\ UNCHANGED << qspinlock, mcs_lock, priority, ret_trylock, lock_, 
                              lock_s, lock_sp, priority_level >>
@@ -345,7 +356,7 @@ su1(self) == /\ pc[self] = "su1" /\ ProcessEnabled(self)
              /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
              /\ UNCHANGED << mcs_lock, priority, ret_trylock, lock_, val_, 
                              lock_sp, lock, val, old, next, prev, node, idx, 
-                             priority_level >>
+                             cnt, priority_level >>
 
 spin_unlock(self) == su1(self)
 
@@ -359,17 +370,38 @@ stl1(self) == /\ pc[self] = "stl1" /\ ProcessEnabled(self)
               /\ lock_sp' = [lock_sp EXCEPT ![self] = Head(stack[self]).lock_sp]
               /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
               /\ UNCHANGED << mcs_lock, priority, lock_, val_, lock_s, lock, 
-                              val, old, next, prev, node, idx, priority_level >>
+                              val, old, next, prev, node, idx, cnt, 
+                              priority_level >>
 
 spin_trylock(self) == stl1(self)
 
 sp1(self) == /\ pc[self] = "sp1" /\ ProcessEnabled(self)
-             /\ IF NEG_LOCKED_MASK(val[self])
-                   THEN /\ pc' = [pc EXCEPT ![self] = "queue"]
-                   ELSE /\ pc' = [pc EXCEPT ![self] = "sp2"]
+             /\ IF val[self] = PENDING_VAL
+                   THEN /\ pc' = [pc EXCEPT ![self] = "sp1_1"]
+                   ELSE /\ pc' = [pc EXCEPT ![self] = "sp1_2"]
              /\ UNCHANGED << qspinlock, mcs_lock, priority, ret_trylock, stack, 
                              lock_, val_, lock_s, lock_sp, lock, val, old, 
-                             next, prev, node, idx, priority_level >>
+                             next, prev, node, idx, cnt, priority_level >>
+
+sp1_1(self) == /\ pc[self] = "sp1_1" /\ ProcessEnabled(self)
+               /\ IF qspinlock[lock[self]] = PENDING_VAL /\ cnt[self] # 0
+                     THEN /\ cnt' = [cnt EXCEPT ![self] = cnt[self] - 1]
+                          /\ pc' = [pc EXCEPT ![self] = "sp1_1"]
+                          /\ val' = val
+                     ELSE /\ val' = [val EXCEPT ![self] = qspinlock[lock[self]]]
+                          /\ pc' = [pc EXCEPT ![self] = "sp1_2"]
+                          /\ cnt' = cnt
+               /\ UNCHANGED << qspinlock, mcs_lock, priority, ret_trylock, 
+                               stack, lock_, val_, lock_s, lock_sp, lock, old, 
+                               next, prev, node, idx, priority_level >>
+
+sp1_2(self) == /\ pc[self] = "sp1_2" /\ ProcessEnabled(self)
+               /\ IF NEG_LOCKED_MASK(val[self])
+                     THEN /\ pc' = [pc EXCEPT ![self] = "queue"]
+                     ELSE /\ pc' = [pc EXCEPT ![self] = "sp2"]
+               /\ UNCHANGED << qspinlock, mcs_lock, priority, ret_trylock, 
+                               stack, lock_, val_, lock_s, lock_sp, lock, val, 
+                               old, next, prev, node, idx, cnt, priority_level >>
 
 sp2(self) == /\ pc[self] = "sp2" /\ ProcessEnabled(self)
              /\ val' = [val EXCEPT ![self] = qspinlock[lock[self]]]
@@ -377,7 +409,7 @@ sp2(self) == /\ pc[self] = "sp2" /\ ProcessEnabled(self)
              /\ pc' = [pc EXCEPT ![self] = "sp3"]
              /\ UNCHANGED << mcs_lock, priority, ret_trylock, stack, lock_, 
                              val_, lock_s, lock_sp, lock, old, next, prev, 
-                             node, idx, priority_level >>
+                             node, idx, cnt, priority_level >>
 
 sp3(self) == /\ pc[self] = "sp3" /\ ProcessEnabled(self)
              /\ IF ~NEG_LOCKED_MASK(val[self])
@@ -392,12 +424,13 @@ sp3(self) == /\ pc[self] = "sp3" /\ ProcessEnabled(self)
                         /\ prev' = [prev EXCEPT ![self] = Head(stack[self]).prev]
                         /\ node' = [node EXCEPT ![self] = Head(stack[self]).node]
                         /\ idx' = [idx EXCEPT ![self] = Head(stack[self]).idx]
+                        /\ cnt' = [cnt EXCEPT ![self] = Head(stack[self]).cnt]
                         /\ lock' = [lock EXCEPT ![self] = Head(stack[self]).lock]
                         /\ val' = [val EXCEPT ![self] = Head(stack[self]).val]
                         /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                    ELSE /\ pc' = [pc EXCEPT ![self] = "sp4"]
                         /\ UNCHANGED << qspinlock, stack, lock, val, old, next, 
-                                        prev, node, idx >>
+                                        prev, node, idx, cnt >>
              /\ UNCHANGED << mcs_lock, priority, ret_trylock, lock_, val_, 
                              lock_s, lock_sp, priority_level >>
 
@@ -409,7 +442,7 @@ sp4(self) == /\ pc[self] = "sp4" /\ ProcessEnabled(self)
              /\ pc' = [pc EXCEPT ![self] = "queue"]
              /\ UNCHANGED << mcs_lock, priority, ret_trylock, stack, lock_, 
                              val_, lock_s, lock_sp, lock, val, old, next, prev, 
-                             node, idx, priority_level >>
+                             node, idx, cnt, priority_level >>
 
 queue(self) == /\ pc[self] = "queue" /\ ProcessEnabled(self)
                /\ node' = [node EXCEPT ![self] = McsNode(self[1], 1)]
@@ -418,7 +451,7 @@ queue(self) == /\ pc[self] = "queue" /\ ProcessEnabled(self)
                /\ pc' = [pc EXCEPT ![self] = "sp11"]
                /\ UNCHANGED << qspinlock, priority, ret_trylock, stack, lock_, 
                                val_, lock_s, lock_sp, lock, val, old, next, 
-                               prev, priority_level >>
+                               prev, cnt, priority_level >>
 
 sp11(self) == /\ pc[self] = "sp11" /\ ProcessEnabled(self)
               /\ node' = [node EXCEPT ![self] = McsNode(self[1], idx[self])]
@@ -431,7 +464,7 @@ sp11(self) == /\ pc[self] = "sp11" /\ ProcessEnabled(self)
                                                       \o stack[self]]
               /\ pc' = [pc EXCEPT ![self] = "stl1"]
               /\ UNCHANGED << qspinlock, priority, ret_trylock, lock_, val_, 
-                              lock_s, lock, val, old, next, prev, idx, 
+                              lock_s, lock, val, old, next, prev, idx, cnt, 
                               priority_level >>
 
 sp13(self) == /\ pc[self] = "sp13" /\ ProcessEnabled(self)
@@ -440,7 +473,7 @@ sp13(self) == /\ pc[self] = "sp13" /\ ProcessEnabled(self)
                     ELSE /\ pc' = [pc EXCEPT ![self] = "sp14"]
               /\ UNCHANGED << qspinlock, mcs_lock, priority, ret_trylock, 
                               stack, lock_, val_, lock_s, lock_sp, lock, val, 
-                              old, next, prev, node, idx, priority_level >>
+                              old, next, prev, node, idx, cnt, priority_level >>
 
 sp14(self) == /\ pc[self] = "sp14" /\ ProcessEnabled(self)
               /\ old' = [old EXCEPT ![self] = LockVal(FALSE, FALSE, qspinlock[lock[self]].tail_idx, qspinlock[lock[self]].tail_cpu)]
@@ -450,7 +483,7 @@ sp14(self) == /\ pc[self] = "sp14" /\ ProcessEnabled(self)
               /\ pc' = [pc EXCEPT ![self] = "sp15"]
               /\ UNCHANGED << mcs_lock, priority, ret_trylock, stack, lock_, 
                               val_, lock_s, lock_sp, lock, val, prev, node, 
-                              idx, priority_level >>
+                              idx, cnt, priority_level >>
 
 sp15(self) == /\ pc[self] = "sp15" /\ ProcessEnabled(self)
               /\ IF TAIL_MASK(old[self])
@@ -461,7 +494,7 @@ sp15(self) == /\ pc[self] = "sp15" /\ ProcessEnabled(self)
                          /\ UNCHANGED << mcs_lock, prev >>
               /\ UNCHANGED << qspinlock, priority, ret_trylock, stack, lock_, 
                               val_, lock_s, lock_sp, lock, val, old, next, 
-                              node, idx, priority_level >>
+                              node, idx, cnt, priority_level >>
 
 sp16(self) == /\ pc[self] = "sp16" /\ ProcessEnabled(self)
               /\ mcs_lock[node[self]].locked
@@ -469,7 +502,7 @@ sp16(self) == /\ pc[self] = "sp16" /\ ProcessEnabled(self)
               /\ pc' = [pc EXCEPT ![self] = "sp18"]
               /\ UNCHANGED << qspinlock, mcs_lock, priority, ret_trylock, 
                               stack, lock_, val_, lock_s, lock_sp, lock, val, 
-                              old, prev, node, idx, priority_level >>
+                              old, prev, node, idx, cnt, priority_level >>
 
 sp18(self) == /\ pc[self] = "sp18" /\ ProcessEnabled(self)
               /\ ~qspinlock[lock[self]].locked /\ ~qspinlock[lock[self]].pending
@@ -477,7 +510,7 @@ sp18(self) == /\ pc[self] = "sp18" /\ ProcessEnabled(self)
               /\ pc' = [pc EXCEPT ![self] = "locked"]
               /\ UNCHANGED << qspinlock, mcs_lock, priority, ret_trylock, 
                               stack, lock_, val_, lock_s, lock_sp, lock, old, 
-                              next, prev, node, idx, priority_level >>
+                              next, prev, node, idx, cnt, priority_level >>
 
 locked(self) == /\ pc[self] = "locked" /\ ProcessEnabled(self)
                 /\ IF val[self].tail_idx = idx[self] /\ val[self].tail_cpu = self[1]
@@ -493,7 +526,7 @@ locked(self) == /\ pc[self] = "locked" /\ ProcessEnabled(self)
                            /\ UNCHANGED << qspinlock, old >>
                 /\ UNCHANGED << mcs_lock, priority, ret_trylock, stack, lock_, 
                                 val_, lock_s, lock_sp, lock, val, next, prev, 
-                                node, idx, priority_level >>
+                                node, idx, cnt, priority_level >>
 
 sp21(self) == /\ pc[self] = "sp21" /\ ProcessEnabled(self)
               /\ qspinlock' = [qspinlock EXCEPT ![lock[self]].locked = TRUE]
@@ -506,7 +539,7 @@ sp21(self) == /\ pc[self] = "sp21" /\ ProcessEnabled(self)
               /\ pc' = [pc EXCEPT ![self] = "release"]
               /\ UNCHANGED << priority, ret_trylock, stack, lock_, val_, 
                               lock_s, lock_sp, lock, val, old, prev, node, idx, 
-                              priority_level >>
+                              cnt, priority_level >>
 
 release(self) == /\ pc[self] = "release" /\ ProcessEnabled(self)
                  /\ mcs_lock' = [mcs_lock EXCEPT ![McsNode(self[1], 1)].count = mcs_lock[McsNode(self[1], 1)].count - 1]
@@ -516,17 +549,19 @@ release(self) == /\ pc[self] = "release" /\ ProcessEnabled(self)
                  /\ prev' = [prev EXCEPT ![self] = Head(stack[self]).prev]
                  /\ node' = [node EXCEPT ![self] = Head(stack[self]).node]
                  /\ idx' = [idx EXCEPT ![self] = Head(stack[self]).idx]
+                 /\ cnt' = [cnt EXCEPT ![self] = Head(stack[self]).cnt]
                  /\ lock' = [lock EXCEPT ![self] = Head(stack[self]).lock]
                  /\ val' = [val EXCEPT ![self] = Head(stack[self]).val]
                  /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                  /\ UNCHANGED << qspinlock, priority, ret_trylock, lock_, val_, 
                                  lock_s, lock_sp, priority_level >>
 
-spin_lock_slowpath(self) == sp1(self) \/ sp2(self) \/ sp3(self)
-                               \/ sp4(self) \/ queue(self) \/ sp11(self)
-                               \/ sp13(self) \/ sp14(self) \/ sp15(self)
-                               \/ sp16(self) \/ sp18(self) \/ locked(self)
-                               \/ sp21(self) \/ release(self)
+spin_lock_slowpath(self) == sp1(self) \/ sp1_1(self) \/ sp1_2(self)
+                               \/ sp2(self) \/ sp3(self) \/ sp4(self)
+                               \/ queue(self) \/ sp11(self) \/ sp13(self)
+                               \/ sp14(self) \/ sp15(self) \/ sp16(self)
+                               \/ sp18(self) \/ locked(self) \/ sp21(self)
+                               \/ release(self)
 
 t1(self) == /\ pc[self] = "t1" /\ ProcessEnabled(self)
             /\ priority_level' = [priority_level EXCEPT ![self] = priority[self[1]]]
@@ -540,7 +575,7 @@ t1(self) == /\ pc[self] = "t1" /\ ProcessEnabled(self)
             /\ val_' = [val_ EXCEPT ![self] = defaultInitValue]
             /\ pc' = [pc EXCEPT ![self] = "sl1"]
             /\ UNCHANGED << qspinlock, mcs_lock, ret_trylock, lock_s, lock_sp, 
-                            lock, val, old, next, prev, node, idx >>
+                            lock, val, old, next, prev, node, idx, cnt >>
 
 cs(self) == /\ pc[self] = "cs" /\ ProcessEnabled(self)
             /\ TRUE
@@ -552,14 +587,14 @@ cs(self) == /\ pc[self] = "cs" /\ ProcessEnabled(self)
             /\ pc' = [pc EXCEPT ![self] = "su1"]
             /\ UNCHANGED << qspinlock, mcs_lock, priority, ret_trylock, lock_, 
                             val_, lock_sp, lock, val, old, next, prev, node, 
-                            idx, priority_level >>
+                            idx, cnt, priority_level >>
 
 t2(self) == /\ pc[self] = "t2" /\ ProcessEnabled(self)
             /\ priority' = [priority EXCEPT ![self[1]] = priority_level[self]]
             /\ pc' = [pc EXCEPT ![self] = "t1"]
             /\ UNCHANGED << qspinlock, mcs_lock, ret_trylock, stack, lock_, 
                             val_, lock_s, lock_sp, lock, val, old, next, prev, 
-                            node, idx, priority_level >>
+                            node, idx, cnt, priority_level >>
 
 thread(self) == t1(self) \/ cs(self) \/ t2(self)
 
