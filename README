@@ -59,3 +59,9 @@ qspinlock.tla
 
 Model of the Linux queued spinlock implementation, modified to avoid
 cmpxchg() loops which cannot guarantee forward progress.
+
+arm64kpti.tla
+-------------
+
+Model of the arm64 Linux KPTI support, checking the TLB separation
+(page table and ASIDs) between user, kernel, EFI mapping and idmap.
