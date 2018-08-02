@@ -7,6 +7,7 @@ EXTENDS Naturals, Sequences, FiniteSets, TLC
 CONSTANTS	CPUS,
 		THREADS,
 		MMS,
+		TLB,
 		TTBR0_PAN
 
 (* --algorithm kpti {
@@ -163,7 +164,6 @@ _utd1:	\* set reserved TTBR0 and ASID
 	cpu_set_reserved_ttbr0();
 _utd2:	\* set reserved ASID
 	cpu[self].ttbr1.asid := << "zero", 0 >>;
-_utd3:	update_tlbs();
 	return;
 }
 
@@ -173,10 +173,8 @@ _ute1:	assert /\ cpu[self].ttbr1.asid = << "zero", 0 >>
 	       /\ cpu[self].ttbr0.baddr = "reserved";
 	\* restore user ASID
 	cpu[self].ttbr1.asid := thread[current[self]].ttbr0.asid;
-_ute2:	update_tlbs();
-	\* restore user page tables
+_ute2:	\* restore user page tables
 	cpu[self].ttbr0 := thread[current[self]].ttbr0;
-_ute3:	update_tlbs();
 	return;
 }
 
@@ -206,9 +204,7 @@ csm1:	assert next_mm # "init_mm";
 	cpu_set_reserved_ttbr0();
 csm2:	\* cpu_do_switch_mm()
 	cpu[self].ttbr1.asid := << next_mm, 0 >>;		\* ASID in TTBR1
-csm3:	update_tlbs();
-	cpu[self].ttbr0 := MakeTTB(<< "zero", 0 >>, next_mm);
-csm4:	update_tlbs();
+csm3:	cpu[self].ttbr0 := MakeTTB(<< "zero", 0 >>, next_mm);
 	return;
 }
 
@@ -298,7 +294,6 @@ procedure tramp_map_kernel()
 {
 tmk1:	cpu[self].ttbr1.baddr := "init_mm" ||
 	cpu[self].ttbr1.asid[2] := 0;	\* kernel ASID
-tmk2:	update_tlbs();
 	return;
 }
 
@@ -306,7 +301,6 @@ procedure tramp_unmap_kernel()
 {
 tuk1:	cpu[self].ttbr1.baddr := "trampoline" ||
 	cpu[self].ttbr1.asid[2] := 1;	\* user ASID
-tuk2:	update_tlbs();
 	return;
 }
 
@@ -461,10 +455,16 @@ process (Processor \in CPUS)
 {
 start_cpu:
 	thread["idle"].active_mm := "init_mm";
-	update_tlbs();
 	local_irq_enable();
 idle:
 	await FALSE;
+}
+
+process (TLBSpeculation = TLB)
+{
+tlb_speculation:
+	while(TRUE)
+		update_tlbs();
 }
 } *)
 \* BEGIN TRANSLATION
@@ -552,7 +552,7 @@ vars == << current, interrupts, preempt_count, mode, tlb, runqueue, pt_regs,
            thread, cpu, pc, stack, next_mm, __mm, prev_mm, next, active_mm, 
            next_thread, entry_el, exit_el, mm_efi >>
 
-ProcSet == (CPUS)
+ProcSet == (CPUS) \cup {TLB}
 
 Init == (* Global variables *)
         /\ current = [c \in CPUS |-> "idle"]
@@ -591,7 +591,8 @@ Init == (* Global variables *)
         (* Procedure efi_set_pgd *)
         /\ mm_efi = [ self \in ProcSet |-> defaultInitValue]
         /\ stack = [self \in ProcSet |-> << >>]
-        /\ pc = [self \in ProcSet |-> "start_cpu"]
+        /\ pc = [self \in ProcSet |-> CASE self \in CPUS -> "start_cpu"
+                                        [] self = TLB -> "tlb_speculation"]
 
 _utd1(self) == /\ pc[self] = "_utd1"
                /\ cpu' = [cpu EXCEPT ![self].ttbr0 = MakeTTB(<< "zero", 0 >>, "reserved")]
@@ -603,22 +604,14 @@ _utd1(self) == /\ pc[self] = "_utd1"
 
 _utd2(self) == /\ pc[self] = "_utd2"
                /\ cpu' = [cpu EXCEPT ![self].ttbr1.asid = << "zero", 0 >>]
-               /\ pc' = [pc EXCEPT ![self] = "_utd3"]
-               /\ UNCHANGED << current, interrupts, preempt_count, mode, tlb, 
-                               runqueue, pt_regs, thread, stack, next_mm, __mm, 
-                               prev_mm, next, active_mm, next_thread, entry_el, 
-                               exit_el, mm_efi >>
-
-_utd3(self) == /\ pc[self] = "_utd3"
-               /\ tlb' = (tlb \cup ActiveTLBs)
                /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-               /\ UNCHANGED << current, interrupts, preempt_count, mode, 
-                               runqueue, pt_regs, thread, cpu, next_mm, __mm, 
+               /\ UNCHANGED << current, interrupts, preempt_count, mode, tlb, 
+                               runqueue, pt_regs, thread, next_mm, __mm, 
                                prev_mm, next, active_mm, next_thread, entry_el, 
                                exit_el, mm_efi >>
 
-__uaccess_ttbr0_disable(self) == _utd1(self) \/ _utd2(self) \/ _utd3(self)
+__uaccess_ttbr0_disable(self) == _utd1(self) \/ _utd2(self)
 
 _ute1(self) == /\ pc[self] = "_ute1"
                /\ Assert(/\ cpu[self].ttbr1.asid = << "zero", 0 >>
@@ -632,29 +625,20 @@ _ute1(self) == /\ pc[self] = "_ute1"
                                exit_el, mm_efi >>
 
 _ute2(self) == /\ pc[self] = "_ute2"
-               /\ tlb' = (tlb \cup ActiveTLBs)
                /\ cpu' = [cpu EXCEPT ![self].ttbr0 = thread[current[self]].ttbr0]
-               /\ pc' = [pc EXCEPT ![self] = "_ute3"]
-               /\ UNCHANGED << current, interrupts, preempt_count, mode, 
-                               runqueue, pt_regs, thread, stack, next_mm, __mm, 
-                               prev_mm, next, active_mm, next_thread, entry_el, 
-                               exit_el, mm_efi >>
-
-_ute3(self) == /\ pc[self] = "_ute3"
-               /\ tlb' = (tlb \cup ActiveTLBs)
                /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-               /\ UNCHANGED << current, interrupts, preempt_count, mode, 
-                               runqueue, pt_regs, thread, cpu, next_mm, __mm, 
+               /\ UNCHANGED << current, interrupts, preempt_count, mode, tlb, 
+                               runqueue, pt_regs, thread, next_mm, __mm, 
                                prev_mm, next, active_mm, next_thread, entry_el, 
                                exit_el, mm_efi >>
 
-__uaccess_ttbr0_enable(self) == _ute1(self) \/ _ute2(self) \/ _ute3(self)
+__uaccess_ttbr0_enable(self) == _ute1(self) \/ _ute2(self)
 
 utd1(self) == /\ pc[self] = "utd1"
               /\ IF TTBR0_PAN
                     THEN /\ Assert(interrupts[self] = "on", 
-                                   "Failure of assertion at line 118, column 9 of macro called at line 186, column 17.")
+                                   "Failure of assertion at line 119, column 9 of macro called at line 184, column 17.")
                          /\ interrupts' = [interrupts EXCEPT ![self] = "off"]
                          /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "__uaccess_ttbr0_disable",
                                                                   pc        |->  "utd2" ] >>
@@ -688,7 +672,7 @@ uaccess_ttbr0_disable(self) == utd1(self) \/ utd2(self) \/ utd3(self)
 ute1(self) == /\ pc[self] = "ute1"
               /\ IF TTBR0_PAN
                     THEN /\ Assert(interrupts[self] = "on", 
-                                   "Failure of assertion at line 118, column 9 of macro called at line 196, column 17.")
+                                   "Failure of assertion at line 119, column 9 of macro called at line 194, column 17.")
                          /\ interrupts' = [interrupts EXCEPT ![self] = "off"]
                          /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "__uaccess_ttbr0_enable",
                                                                   pc        |->  "ute2" ] >>
@@ -721,7 +705,7 @@ uaccess_ttbr0_enable(self) == ute1(self) \/ ute2(self) \/ ute3(self)
 
 csm1(self) == /\ pc[self] = "csm1"
               /\ Assert(next_mm[self] # "init_mm", 
-                        "Failure of assertion at line 205, column 9.")
+                        "Failure of assertion at line 203, column 9.")
               /\ cpu' = [cpu EXCEPT ![self].ttbr0 = MakeTTB(<< "zero", 0 >>, "reserved")]
               /\ pc' = [pc EXCEPT ![self] = "csm2"]
               /\ UNCHANGED << current, interrupts, preempt_count, mode, tlb, 
@@ -738,25 +722,16 @@ csm2(self) == /\ pc[self] = "csm2"
                               exit_el, mm_efi >>
 
 csm3(self) == /\ pc[self] = "csm3"
-              /\ tlb' = (tlb \cup ActiveTLBs)
               /\ cpu' = [cpu EXCEPT ![self].ttbr0 = MakeTTB(<< "zero", 0 >>, next_mm[self])]
-              /\ pc' = [pc EXCEPT ![self] = "csm4"]
-              /\ UNCHANGED << current, interrupts, preempt_count, mode, 
-                              runqueue, pt_regs, thread, stack, next_mm, __mm, 
-                              prev_mm, next, active_mm, next_thread, entry_el, 
-                              exit_el, mm_efi >>
-
-csm4(self) == /\ pc[self] = "csm4"
-              /\ tlb' = (tlb \cup ActiveTLBs)
               /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
               /\ next_mm' = [next_mm EXCEPT ![self] = Head(stack[self]).next_mm]
               /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-              /\ UNCHANGED << current, interrupts, preempt_count, mode, 
-                              runqueue, pt_regs, thread, cpu, __mm, prev_mm, 
-                              next, active_mm, next_thread, entry_el, exit_el, 
+              /\ UNCHANGED << current, interrupts, preempt_count, mode, tlb, 
+                              runqueue, pt_regs, thread, __mm, prev_mm, next, 
+                              active_mm, next_thread, entry_el, exit_el, 
                               mm_efi >>
 
-cpu_switch_mm(self) == csm1(self) \/ csm2(self) \/ csm3(self) \/ csm4(self)
+cpu_switch_mm(self) == csm1(self) \/ csm2(self) \/ csm3(self)
 
 _sm1(self) == /\ pc[self] = "_sm1"
               /\ IF __mm[self] = "init_mm"
@@ -948,7 +923,7 @@ do_schedule(self) == /\ pc[self] = "do_schedule"
 
 s1(self) == /\ pc[self] = "s1"
             /\ Assert(interrupts[self] = "off", 
-                      "Failure of assertion at line 280, column 9.")
+                      "Failure of assertion at line 276, column 9.")
             /\ \/ /\ current[self] # "idle"
                   /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                   /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
@@ -985,46 +960,30 @@ schedule(self) == do_schedule(self) \/ s1(self) \/ schedule_done(self)
 tmk1(self) == /\ pc[self] = "tmk1"
               /\ cpu' = [cpu EXCEPT ![self].ttbr1.baddr = "init_mm",
                                     ![self].ttbr1.asid[2] = 0]
-              /\ pc' = [pc EXCEPT ![self] = "tmk2"]
-              /\ UNCHANGED << current, interrupts, preempt_count, mode, tlb, 
-                              runqueue, pt_regs, thread, stack, next_mm, __mm, 
-                              prev_mm, next, active_mm, next_thread, entry_el, 
-                              exit_el, mm_efi >>
-
-tmk2(self) == /\ pc[self] = "tmk2"
-              /\ tlb' = (tlb \cup ActiveTLBs)
               /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
               /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-              /\ UNCHANGED << current, interrupts, preempt_count, mode, 
-                              runqueue, pt_regs, thread, cpu, next_mm, __mm, 
+              /\ UNCHANGED << current, interrupts, preempt_count, mode, tlb, 
+                              runqueue, pt_regs, thread, next_mm, __mm, 
                               prev_mm, next, active_mm, next_thread, entry_el, 
                               exit_el, mm_efi >>
 
-tramp_map_kernel(self) == tmk1(self) \/ tmk2(self)
+tramp_map_kernel(self) == tmk1(self)
 
 tuk1(self) == /\ pc[self] = "tuk1"
               /\ cpu' = [cpu EXCEPT ![self].ttbr1.baddr = "trampoline",
                                     ![self].ttbr1.asid[2] = 1]
-              /\ pc' = [pc EXCEPT ![self] = "tuk2"]
-              /\ UNCHANGED << current, interrupts, preempt_count, mode, tlb, 
-                              runqueue, pt_regs, thread, stack, next_mm, __mm, 
-                              prev_mm, next, active_mm, next_thread, entry_el, 
-                              exit_el, mm_efi >>
-
-tuk2(self) == /\ pc[self] = "tuk2"
-              /\ tlb' = (tlb \cup ActiveTLBs)
               /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
               /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-              /\ UNCHANGED << current, interrupts, preempt_count, mode, 
-                              runqueue, pt_regs, thread, cpu, next_mm, __mm, 
+              /\ UNCHANGED << current, interrupts, preempt_count, mode, tlb, 
+                              runqueue, pt_regs, thread, next_mm, __mm, 
                               prev_mm, next, active_mm, next_thread, entry_el, 
                               exit_el, mm_efi >>
 
-tramp_unmap_kernel(self) == tuk1(self) \/ tuk2(self)
+tramp_unmap_kernel(self) == tuk1(self)
 
 ken1(self) == /\ pc[self] = "ken1"
               /\ Assert(interrupts[self] = "off", 
-                        "Failure of assertion at line 315, column 9.")
+                        "Failure of assertion at line 309, column 9.")
               /\ mode' = [mode EXCEPT ![self] = "kernel"]
               /\ IF ~KernelMapped(self)
                     THEN /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "tramp_map_kernel",
@@ -1069,7 +1028,7 @@ kernel_entry(self) == ken1(self) \/ ken2(self) \/ ken3(self)
 
 kex1(self) == /\ pc[self] = "kex1"
               /\ Assert(interrupts[self] = "off", 
-                        "Failure of assertion at line 330, column 9.")
+                        "Failure of assertion at line 324, column 9.")
               /\ IF TTBR0_PAN
                     THEN /\ IF exit_el[self] = "kernel" /\ thread[current[self]].psr_pan_bit
                                THEN /\ thread' = [thread EXCEPT ![current[self]].psr_pan_bit = FALSE]
@@ -1165,9 +1124,9 @@ interrupt(self) == interrupt_handler(self) \/ i1(self) \/ i2(self)
 
 rtu1(self) == /\ pc[self] = "rtu1"
               /\ Assert(mode[self] = "kernel", 
-                        "Failure of assertion at line 361, column 9.")
+                        "Failure of assertion at line 355, column 9.")
               /\ Assert(interrupts[self] = "on", 
-                        "Failure of assertion at line 118, column 9 of macro called at line 362, column 9.")
+                        "Failure of assertion at line 119, column 9 of macro called at line 356, column 9.")
               /\ interrupts' = [interrupts EXCEPT ![self] = "off"]
               /\ pc' = [pc EXCEPT ![self] = "rtu2"]
               /\ UNCHANGED << current, preempt_count, mode, tlb, runqueue, 
@@ -1200,9 +1159,9 @@ ret_to_user(self) == rtu1(self) \/ rtu2(self) \/ rtu3(self)
 
 sys1(self) == /\ pc[self] = "sys1"
               /\ Assert(mode[self] = "user", 
-                        "Failure of assertion at line 370, column 9.")
+                        "Failure of assertion at line 364, column 9.")
               /\ Assert(interrupts[self] = "on", 
-                        "Failure of assertion at line 118, column 9 of macro called at line 371, column 9.")
+                        "Failure of assertion at line 119, column 9 of macro called at line 365, column 9.")
               /\ interrupts' = [interrupts EXCEPT ![self] = "off"]
               /\ pc' = [pc EXCEPT ![self] = "sys2"]
               /\ UNCHANGED << current, preempt_count, mode, tlb, runqueue, 
@@ -1246,7 +1205,7 @@ ua1(self) == /\ pc[self] = "ua1"
 ua2(self) == /\ pc[self] = "ua2"
              /\ Assert(/\ cpu[self].ttbr0.baddr \in MMS
                        /\ cpu[self].ttbr0.baddr = thread[current[self]].active_mm, 
-                       "Failure of assertion at line 380, column 9.")
+                       "Failure of assertion at line 374, column 9.")
              /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "uaccess_ttbr0_disable",
                                                       pc        |->  "ua3" ] >>
                                                   \o stack[self]]
@@ -1364,7 +1323,7 @@ efi_call_virt(self) == ecv1(self) \/ ecv2(self) \/ ecv3(self)
 
 rk1(self) == /\ pc[self] = "rk1"
              /\ Assert(cpu[self].ttbr1.baddr = "init_mm", 
-                       "Failure of assertion at line 416, column 9.")
+                       "Failure of assertion at line 410, column 9.")
              /\ \/ /\ ~KernelThread(current[self])
                    /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "ret_to_user",
                                                             pc        |->  "rk4" ] >>
@@ -1427,7 +1386,7 @@ run_kernel(self) == rk1(self) \/ rk2(self) \/ rk3(self) \/ rk4(self)
 ru1(self) == /\ pc[self] = "ru1"
              /\ Assert(/\ cpu[self].ttbr0.baddr \in MMS
                        /\ ~thread[current[self]].psr_pan_bit, 
-                       "Failure of assertion at line 436, column 9.")
+                       "Failure of assertion at line 430, column 9.")
              /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "syscall",
                                                       pc        |->  Head(stack[self]).pc ] >>
                                                   \o Tail(stack[self])]
@@ -1441,7 +1400,7 @@ run_user(self) == ru1(self)
 
 start_thread(self) == /\ pc[self] = "start_thread"
                       /\ Assert(interrupts[self] = "on", 
-                                "Failure of assertion at line 446, column 17.")
+                                "Failure of assertion at line 440, column 17.")
                       /\ \/ /\ mode[self] = "kernel"
                             /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "run_kernel",
                                                                      pc        |->  "start_thread" ] >>
@@ -1464,10 +1423,9 @@ run_thread(self) == start_thread(self)
 
 start_cpu(self) == /\ pc[self] = "start_cpu"
                    /\ thread' = [thread EXCEPT !["idle"].active_mm = "init_mm"]
-                   /\ tlb' = (tlb \cup ActiveTLBs)
                    /\ interrupts' = [interrupts EXCEPT ![self] = "on"]
                    /\ pc' = [pc EXCEPT ![self] = "idle"]
-                   /\ UNCHANGED << current, preempt_count, mode, runqueue, 
+                   /\ UNCHANGED << current, preempt_count, mode, tlb, runqueue, 
                                    pt_regs, cpu, stack, next_mm, __mm, prev_mm, 
                                    next, active_mm, next_thread, entry_el, 
                                    exit_el, mm_efi >>
@@ -1482,28 +1440,35 @@ idle(self) == /\ pc[self] = "idle"
 
 Processor(self) == start_cpu(self) \/ idle(self)
 
-Next == (\E self \in ProcSet:  \/ __uaccess_ttbr0_disable(self)
-                               \/ __uaccess_ttbr0_enable(self)
-                               \/ uaccess_ttbr0_disable(self)
-                               \/ uaccess_ttbr0_enable(self)
-                               \/ cpu_switch_mm(self) \/ __switch_mm(self)
-                               \/ switch_mm(self) \/ use_mm(self)
-                               \/ unuse_mm(self) \/ context_switch(self)
-                               \/ schedule(self) \/ tramp_map_kernel(self)
-                               \/ tramp_unmap_kernel(self)
-                               \/ kernel_entry(self) \/ kernel_exit(self)
-                               \/ interrupt(self) \/ ret_to_user(self)
-                               \/ syscall(self) \/ uaccess(self)
-                               \/ efi_set_pgd(self) \/ efi_call_virt(self)
-                               \/ run_kernel(self) \/ run_user(self)
-                               \/ run_thread(self))
+tlb_speculation == /\ pc[TLB] = "tlb_speculation"
+                   /\ tlb' = (tlb \cup ActiveTLBs)
+                   /\ pc' = [pc EXCEPT ![TLB] = "tlb_speculation"]
+                   /\ UNCHANGED << current, interrupts, preempt_count, mode, 
+                                   runqueue, pt_regs, thread, cpu, stack, 
+                                   next_mm, __mm, prev_mm, next, active_mm, 
+                                   next_thread, entry_el, exit_el, mm_efi >>
+
+TLBSpeculation == tlb_speculation
+
+Next == TLBSpeculation
+           \/ (\E self \in ProcSet:  \/ __uaccess_ttbr0_disable(self)
+                                     \/ __uaccess_ttbr0_enable(self)
+                                     \/ uaccess_ttbr0_disable(self)
+                                     \/ uaccess_ttbr0_enable(self)
+                                     \/ cpu_switch_mm(self) \/ __switch_mm(self)
+                                     \/ switch_mm(self) \/ use_mm(self)
+                                     \/ unuse_mm(self) \/ context_switch(self)
+                                     \/ schedule(self) \/ tramp_map_kernel(self)
+                                     \/ tramp_unmap_kernel(self)
+                                     \/ kernel_entry(self) \/ kernel_exit(self)
+                                     \/ interrupt(self) \/ ret_to_user(self)
+                                     \/ syscall(self) \/ uaccess(self)
+                                     \/ efi_set_pgd(self) \/ efi_call_virt(self)
+                                     \/ run_kernel(self) \/ run_user(self)
+                                     \/ run_thread(self))
            \/ (\E self \in CPUS: Processor(self))
-           \/ (* Disjunct to prevent deadlock on termination *)
-              ((\A self \in ProcSet: pc[self] = "Done") /\ UNCHANGED vars)
 
 Spec == Init /\ [][Next]_vars
-
-Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
 \* END TRANSLATION
 
@@ -1535,7 +1500,7 @@ ReturnInt(self)	== /\ pc[self] = "ret_from_interrupt"
 
 Interrupt(self)	== HandleInt(self) \/ ReturnInt(self)
 
-PreemptNext == (\E self \in ProcSet : Interrupt(self)) \/ Next
+PreemptNext == (\E self \in CPUS : Interrupt(self)) \/ Next
 
 PreemptSpec == Init /\ [][PreemptNext]_vars
 ==============================================================================
