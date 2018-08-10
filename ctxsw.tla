@@ -20,6 +20,8 @@ variables
 						THEN Cardinality(PROCS) + 1	\* idle tasks + 1
 						ELSE 0]];
 
+	proc_mm	= [p \in PROCS |-> "init_mm"];
+
 	\* interrupts on by default
 	interrupts = [p \in PROCS |-> "on"];
 
@@ -48,6 +50,7 @@ define {
 		   /\ mm \in [MMS \cup {"init_mm"} -> mm_struct]
 		   /\ prev_mm \in [PROCS -> MMS \cup {"null", "init_mm"}]
 		   /\ runqueue \subseteq TASKS
+		   /\ proc_mm \in [PROCS -> MMS \cup {"init_mm"}]
 
 	\* Scheduler invariant
 	SchedInv == /\ \A t \in runqueue : ~Running(t)
@@ -90,6 +93,10 @@ macro mmgrab(m) {
 
 macro mmget(m) {
 	mm[m].mm_users := mm[m].mm_users + 1;
+}
+
+macro switch_mm(m) {
+	proc_mm[task[self].cpu] := m;
 }
 
 procedure mmdrop(_mm)
@@ -164,6 +171,8 @@ context_switch:
 	if (task[next].mm = "null") {
 		task[next].active_mm := oldmm;
 		mmgrab(oldmm);
+	} else {
+		switch_mm(task[next].mm);
 	};
 
 cs1:	if (task[prev].mm = "null") {
