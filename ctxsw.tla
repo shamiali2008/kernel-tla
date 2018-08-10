@@ -70,11 +70,6 @@ define {
 	Perms	== Permutations(PROCS) \cup Permutations(TASKS) \cup Permutations(MMS)
 }
 
-macro sleep(t) {
-	\* wait for the thread to be scheduled on a CPU
-	await task[t].cpu # "none";
-}
-
 macro local_irq_disable() {
 	interrupts[task[self].cpu] := "off";
 }
@@ -153,7 +148,7 @@ exm4:	task[self].mm := "null";
 procedure finish_task_switch()
 {
 fts1:	\* wait for the current thread to be rescheduled
-	sleep(self);
+	await Running(self);
 
 	if (prev_mm[task[self].cpu] # "null")
 		call mmdrop(prev_mm[task[self].cpu]);
@@ -255,7 +250,7 @@ process (idle \in PROCS)
 {
 idle_start:
 	while (TRUE)
-		sleep(self);
+		await Running(self);
 }
 } *)
 ------------------------------------------------------------------------------
