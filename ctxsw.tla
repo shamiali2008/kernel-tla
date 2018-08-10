@@ -66,6 +66,7 @@ define {
 			(\A t \in TASKS \cup PROCS : task[t].active_mm # m)
 		   /\ \A m \in MMS : mm[m].mm_users > 0 => mm[m].mm_count > 0
 		   /\ \A m \in freemms : mm[m].mm_count = 0
+		   /\ \A p \in PROCS : proc_mm[p] \notin freemms
 		   /\ mm["init_mm"].mm_count > 0
 
 	\* Symmetry optimisations
@@ -127,6 +128,7 @@ procedure exec_mmap(_mm)
 {
 emap1:	with (old_mm = task[self].mm, active_mm = task[self].active_mm) {
 		task[self].mm := _mm || task[self].active_mm := _mm;
+		switch_mm(_mm);		\* activate_mm()
 		if (old_mm # "null") {
 			call mmput(old_mm);
 			return;
@@ -259,8 +261,8 @@ idle_start:
 } *)
 ------------------------------------------------------------------------------
 \* BEGIN TRANSLATION
-\* Parameter _mm of procedure mmdrop at line 104 col 18 changed to _mm_
-\* Parameter _mm of procedure mmput at line 115 col 17 changed to _mm_m
+\* Parameter _mm of procedure mmdrop at line 105 col 18 changed to _mm_
+\* Parameter _mm of procedure mmput at line 116 col 17 changed to _mm_m
 CONSTANT defaultInitValue
 VARIABLES task, mm, proc_mm, interrupts, prev_mm, freemms, runqueue, pc, 
           stack
@@ -296,6 +298,7 @@ MMInv   == /\ \A m \in MMS : mm[m].mm_users = 0 =>
                 (\A t \in TASKS \cup PROCS : task[t].active_mm # m)
            /\ \A m \in MMS : mm[m].mm_users > 0 => mm[m].mm_count > 0
            /\ \A m \in freemms : mm[m].mm_count = 0
+           /\ \A p \in PROCS : proc_mm[p] \notin freemms
            /\ mm["init_mm"].mm_count > 0
 
 
@@ -380,6 +383,7 @@ emap1(self) == /\ pc[self] = "emap1"
                     LET active_mm == task[self].active_mm IN
                       /\ task' = [task EXCEPT ![self].mm = _mm[self],
                                               ![self].active_mm = _mm[self]]
+                      /\ proc_mm' = [proc_mm EXCEPT ![task'[self].cpu] = _mm[self]]
                       /\ IF old_mm # "null"
                             THEN /\ /\ _mm_m' = [_mm_m EXCEPT ![self] = old_mm]
                                     /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "mmput",
@@ -395,8 +399,8 @@ emap1(self) == /\ pc[self] = "emap1"
                                                                          \o Tail(stack[self])]
                                  /\ pc' = [pc EXCEPT ![self] = "mmd1"]
                                  /\ _mm_m' = _mm_m
-               /\ UNCHANGED << mm, proc_mm, interrupts, prev_mm, freemms, 
-                               runqueue, _mm, prev, next, oldmm >>
+               /\ UNCHANGED << mm, interrupts, prev_mm, freemms, runqueue, _mm, 
+                               prev, next, oldmm >>
 
 exec_mmap(self) == emap1(self)
 
