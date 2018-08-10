@@ -632,17 +632,20 @@ Spec == Init /\ [][Next]_vars
 \* END TRANSLATION
 ------------------------------------------------------------------------------
 
+\* Call the given label with the return path set to the interrupted pc and stack
+IntCall(self, proc, label) ==
+	/\ stack' = [stack EXCEPT ![self] = << [procedure	|->  proc,
+						pc		|->  pc[self]] >>
+					    \o stack[self]]
+	/\ pc' = [pc EXCEPT ![self] = label]
+
 Interrupt(self) ==
 	\* only interrupt running tasks with interrupts enabled
 	/\ Running(self)
 	/\ interrupts[task[self].cpu] = "on"
 	\* non-reentrant handler
 	/\ pc[self] # "handle_irq"
-	\* IRQ handler call; save the return pc on the stack
-	/\ stack' = [stack EXCEPT ![self] = << [procedure	|->  "interrupt",
-						pc	|->  pc[self]] >>
-						\o stack[self]]
-	/\ pc' = [pc EXCEPT ![self] = "handle_irq"]
+	/\ IntCall(self, "interrupt", "handle_irq")
 	/\ UNCHANGED proc_vars
 
 PreemptNext == (\E self \in ProcSet : Interrupt(self)) \/ Next
