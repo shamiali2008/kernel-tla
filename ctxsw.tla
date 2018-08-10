@@ -11,7 +11,8 @@ variables
 	task	= [t \in TASKS \cup PROCS |->
 			[mm		|-> "null",
 			 active_mm	|-> IF t \in PROCS THEN "init_mm" ELSE "null",
-			 cpu		|-> IF t \in PROCS THEN t ELSE "none"]];
+			 cpu		|-> IF t \in PROCS THEN t ELSE "none",
+			 state		|-> "running"]];
 
 	\* mm structures available
 	mm	= [m \in MMS \cup {"init_mm"} |->
@@ -38,7 +39,8 @@ define {
 	task_struct ==
 		[mm:		MMS \cup {"null"},
 		 active_mm:	MMS \cup {"null", "init_mm"},
-		 cpu:		PROCS \cup {"none"}]
+		 cpu:		PROCS \cup {"none"},
+		 state:		{"running", "dead"}]
 
 	mm_struct ==
 		[mm_users:	Nat,
@@ -92,6 +94,11 @@ macro mmget(m) {
 
 macro switch_mm(m) {
 	proc_mm[task[self].cpu] := m;
+}
+
+macro switch_to(prev, next) {
+	\* task[prev].cpu will be updated when scheduled in again
+	task[next].cpu := task[prev].cpu || task[prev].cpu := "none";
 }
 
 procedure mmdrop(_mm)
@@ -160,9 +167,7 @@ fts2:	prev_mm[task[self].cpu] := "null";
 procedure context_switch(prev, next)
 	variables oldmm;
 {
-context_switch:
-	oldmm := task[prev].active_mm;
-	assert oldmm # "null";
+cs1:	oldmm := task[prev].active_mm;
 	if (task[next].mm = "null") {
 		task[next].active_mm := oldmm;
 		mmgrab(oldmm);
@@ -170,16 +175,15 @@ context_switch:
 		switch_mm(task[next].mm);
 	};
 
-cs1:	if (task[prev].mm = "null") {
+cs2:	if (task[prev].mm = "null") {
 		task[prev].active_mm := "null";
 		prev_mm[task[self].cpu] := oldmm;
 	};
 
-switch_to:
-	\* task[prev].cpu will be updated when scheduled in again
-	task[next].cpu := task[prev].cpu || task[prev].cpu := "none";
-	\* move prev to the runqueue unless idle or exited
-	if (pc[prev] # "Done" /\ prev \notin PROCS)
+cs3:	switch_to(prev, next);
+
+	\* move prev to the runqueue unless idle or dead
+	if (task[prev].state = "running" /\ prev \notin PROCS)
 		runqueue := runqueue \cup {prev};
 
 	call finish_task_switch();
@@ -243,7 +247,7 @@ t1:			goto thread_end;
 	};
 
 thread_end:
-	skip;
+	task[self].state := "dead";
 }
 
 process (idle \in PROCS)
@@ -255,18 +259,19 @@ idle_start:
 } *)
 ------------------------------------------------------------------------------
 \* BEGIN TRANSLATION
-\* Label context_switch of procedure context_switch at line 162 col 9 changed to context_switch_
-\* Procedure variable _mm of procedure exit_mm at line 134 col 18 changed to _mm_
-\* Parameter _mm of procedure mmdrop at line 95 col 18 changed to _mm_m
-\* Parameter _mm of procedure mmput at line 106 col 17 changed to _mm_mm
+\* Procedure variable _mm of procedure exit_mm at line 143 col 18 changed to _mm_
+\* Parameter _mm of procedure mmdrop at line 104 col 18 changed to _mm_m
+\* Parameter _mm of procedure mmput at line 115 col 17 changed to _mm_mm
 CONSTANT defaultInitValue
-VARIABLES task, mm, interrupts, prev_mm, freemms, runqueue, pc, stack
+VARIABLES task, mm, proc_mm, interrupts, prev_mm, freemms, runqueue, pc, 
+          stack
 
 (* define statement *)
 task_struct ==
         [mm:            MMS \cup {"null"},
          active_mm:     MMS \cup {"null", "init_mm"},
-         cpu:           PROCS \cup {"none"}]
+         cpu:           PROCS \cup {"none"},
+         state:         {"running", "dead"}]
 
 mm_struct ==
         [mm_users:      Nat,
@@ -278,6 +283,7 @@ TypeInv == /\ task \in [TASKS \cup PROCS -> task_struct]
            /\ mm \in [MMS \cup {"init_mm"} -> mm_struct]
            /\ prev_mm \in [PROCS -> MMS \cup {"null", "init_mm"}]
            /\ runqueue \subseteq TASKS
+           /\ proc_mm \in [PROCS -> MMS \cup {"init_mm"}]
 
 
 SchedInv == /\ \A t \in runqueue : ~Running(t)
@@ -298,8 +304,9 @@ Perms   == Permutations(PROCS) \cup Permutations(TASKS) \cup Permutations(MMS)
 
 VARIABLES _mm_m, _mm_mm, _mm, old_mm, active_mm, _mm_, prev, next, oldmm
 
-proc_vars == << task, mm, interrupts, prev_mm, freemms, runqueue, _mm_m, 
-           _mm_mm, _mm, old_mm, active_mm, _mm_, prev, next, oldmm >>
+proc_vars == << task, mm, proc_mm, interrupts, prev_mm, freemms, runqueue, 
+           _mm_m, _mm_mm, _mm, old_mm, active_mm, _mm_, prev, next, 
+           oldmm >>
 
 vars == << proc_vars, pc, stack >>
 
@@ -309,12 +316,14 @@ Init == (* Global variables *)
         /\ task = [t \in TASKS \cup PROCS |->
                         [mm             |-> "null",
                          active_mm      |-> IF t \in PROCS THEN "init_mm" ELSE "null",
-                         cpu            |-> IF t \in PROCS THEN t ELSE "none"]]
+                         cpu            |-> IF t \in PROCS THEN t ELSE "none",
+                         state          |-> "running"]]
         /\ mm = [m \in MMS \cup {"init_mm"} |->
                       [mm_users       |-> 0,
                        mm_count       |-> IF m = "init_mm"
                                               THEN Cardinality(PROCS) + 1
                                               ELSE 0]]
+        /\ proc_mm = [p \in PROCS |-> "init_mm"]
         /\ interrupts = [p \in PROCS |-> "on"]
         /\ prev_mm = [p \in PROCS |-> "null"]
         /\ freemms = MMS
@@ -348,8 +357,9 @@ mmd1(self) == /\ pc[self] = "mmd1"
                          /\ _mm_m' = [_mm_m EXCEPT ![self] = Head(stack[self])._mm_m]
                          /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                          /\ UNCHANGED freemms
-              /\ UNCHANGED << task, interrupts, prev_mm, runqueue, _mm_mm, _mm, 
-                              old_mm, active_mm, _mm_, prev, next, oldmm >>
+              /\ UNCHANGED << task, proc_mm, interrupts, prev_mm, runqueue, 
+                              _mm_mm, _mm, old_mm, active_mm, _mm_, prev, next, 
+                              oldmm >>
 
 mmdrop(self) == mmd1(self)
 
@@ -367,8 +377,9 @@ mmp1(self) == /\ pc[self] = "mmp1"
                          /\ _mm_mm' = [_mm_mm EXCEPT ![self] = Head(stack[self])._mm_mm]
                          /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                          /\ _mm_m' = _mm_m
-              /\ UNCHANGED << task, interrupts, prev_mm, freemms, runqueue, 
-                              _mm, old_mm, active_mm, _mm_, prev, next, oldmm >>
+              /\ UNCHANGED << task, proc_mm, interrupts, prev_mm, freemms, 
+                              runqueue, _mm, old_mm, active_mm, _mm_, prev, 
+                              next, oldmm >>
 
 mmput(self) == mmp1(self)
 
@@ -378,9 +389,9 @@ emap1(self) == /\ pc[self] = "emap1"
                /\ task' = [task EXCEPT ![self].mm = _mm[self],
                                        ![self].active_mm = _mm[self]]
                /\ pc' = [pc EXCEPT ![self] = "emap2"]
-               /\ UNCHANGED << mm, interrupts, prev_mm, freemms, runqueue, 
-                               stack, _mm_m, _mm_mm, _mm, _mm_, prev, next, 
-                               oldmm >>
+               /\ UNCHANGED << mm, proc_mm, interrupts, prev_mm, freemms, 
+                               runqueue, stack, _mm_m, _mm_mm, _mm, _mm_, prev, 
+                               next, oldmm >>
 
 emap2(self) == /\ pc[self] = "emap2"
                /\ IF old_mm[self] # "null"
@@ -402,7 +413,7 @@ emap2(self) == /\ pc[self] = "emap2"
                                                                   \o Tail(stack[self])]
                           /\ pc' = [pc EXCEPT ![self] = "mmd1"]
                           /\ UNCHANGED _mm_mm
-               /\ UNCHANGED << task, mm, interrupts, prev_mm, freemms, 
+               /\ UNCHANGED << task, mm, proc_mm, interrupts, prev_mm, freemms, 
                                runqueue, _mm, _mm_, prev, next, oldmm >>
 
 exec_mmap(self) == emap1(self) \/ emap2(self)
@@ -410,9 +421,9 @@ exec_mmap(self) == emap1(self) \/ emap2(self)
 exm1(self) == /\ pc[self] = "exm1"
               /\ _mm_' = [_mm_ EXCEPT ![self] = task[self].mm]
               /\ pc' = [pc EXCEPT ![self] = "exm2"]
-              /\ UNCHANGED << task, mm, interrupts, prev_mm, freemms, runqueue, 
-                              stack, _mm_m, _mm_mm, _mm, old_mm, active_mm, 
-                              prev, next, oldmm >>
+              /\ UNCHANGED << task, mm, proc_mm, interrupts, prev_mm, freemms, 
+                              runqueue, stack, _mm_m, _mm_mm, _mm, old_mm, 
+                              active_mm, prev, next, oldmm >>
 
 exm2(self) == /\ pc[self] = "exm2"
               /\ IF _mm_[self] = "null"
@@ -421,16 +432,16 @@ exm2(self) == /\ pc[self] = "exm2"
                          /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                     ELSE /\ pc' = [pc EXCEPT ![self] = "exm3"]
                          /\ UNCHANGED << stack, _mm_ >>
-              /\ UNCHANGED << task, mm, interrupts, prev_mm, freemms, runqueue, 
-                              _mm_m, _mm_mm, _mm, old_mm, active_mm, prev, 
-                              next, oldmm >>
+              /\ UNCHANGED << task, mm, proc_mm, interrupts, prev_mm, freemms, 
+                              runqueue, _mm_m, _mm_mm, _mm, old_mm, active_mm, 
+                              prev, next, oldmm >>
 
 exm3(self) == /\ pc[self] = "exm3"
               /\ mm' = [mm EXCEPT ![_mm_[self]].mm_count = mm[_mm_[self]].mm_count + 1]
               /\ pc' = [pc EXCEPT ![self] = "exm4"]
-              /\ UNCHANGED << task, interrupts, prev_mm, freemms, runqueue, 
-                              stack, _mm_m, _mm_mm, _mm, old_mm, active_mm, 
-                              _mm_, prev, next, oldmm >>
+              /\ UNCHANGED << task, proc_mm, interrupts, prev_mm, freemms, 
+                              runqueue, stack, _mm_m, _mm_mm, _mm, old_mm, 
+                              active_mm, _mm_, prev, next, oldmm >>
 
 exm4(self) == /\ pc[self] = "exm4"
               /\ task' = [task EXCEPT ![self].mm = "null"]
@@ -441,13 +452,14 @@ exm4(self) == /\ pc[self] = "exm4"
                                                           _mm_mm    |->  _mm_mm[self] ] >>
                                                       \o Tail(stack[self])]
               /\ pc' = [pc EXCEPT ![self] = "mmp1"]
-              /\ UNCHANGED << mm, interrupts, prev_mm, freemms, runqueue, 
-                              _mm_m, _mm, old_mm, active_mm, prev, next, oldmm >>
+              /\ UNCHANGED << mm, proc_mm, interrupts, prev_mm, freemms, 
+                              runqueue, _mm_m, _mm, old_mm, active_mm, prev, 
+                              next, oldmm >>
 
 exit_mm(self) == exm1(self) \/ exm2(self) \/ exm3(self) \/ exm4(self)
 
 fts1(self) == /\ pc[self] = "fts1"
-              /\ task[self].cpu # "none"
+              /\ Running(self)
               /\ IF prev_mm[task[self].cpu] # "null"
                     THEN /\ /\ _mm_m' = [_mm_m EXCEPT ![self] = prev_mm[task[self].cpu]]
                             /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "mmdrop",
@@ -457,63 +469,61 @@ fts1(self) == /\ pc[self] = "fts1"
                          /\ pc' = [pc EXCEPT ![self] = "mmd1"]
                     ELSE /\ pc' = [pc EXCEPT ![self] = "fts2"]
                          /\ UNCHANGED << stack, _mm_m >>
-              /\ UNCHANGED << task, mm, interrupts, prev_mm, freemms, runqueue, 
-                              _mm_mm, _mm, old_mm, active_mm, _mm_, prev, next, 
-                              oldmm >>
+              /\ UNCHANGED << task, mm, proc_mm, interrupts, prev_mm, freemms, 
+                              runqueue, _mm_mm, _mm, old_mm, active_mm, _mm_, 
+                              prev, next, oldmm >>
 
 fts2(self) == /\ pc[self] = "fts2"
               /\ prev_mm' = [prev_mm EXCEPT ![task[self].cpu] = "null"]
               /\ interrupts' = [interrupts EXCEPT ![task[self].cpu] = "on"]
               /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
               /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-              /\ UNCHANGED << task, mm, freemms, runqueue, _mm_m, _mm_mm, _mm, 
-                              old_mm, active_mm, _mm_, prev, next, oldmm >>
+              /\ UNCHANGED << task, mm, proc_mm, freemms, runqueue, _mm_m, 
+                              _mm_mm, _mm, old_mm, active_mm, _mm_, prev, next, 
+                              oldmm >>
 
 finish_task_switch(self) == fts1(self) \/ fts2(self)
 
-context_switch_(self) == /\ pc[self] = "context_switch_"
-                         /\ oldmm' = [oldmm EXCEPT ![self] = task[prev[self]].active_mm]
-                         /\ Assert(oldmm'[self] # "null", 
-                                   "Failure of assertion at line 163, column 9.")
-                         /\ IF task[next[self]].mm = "null"
-                               THEN /\ task' = [task EXCEPT ![next[self]].active_mm = oldmm'[self]]
-                                    /\ mm' = [mm EXCEPT ![oldmm'[self]].mm_count = mm[oldmm'[self]].mm_count + 1]
-                               ELSE /\ TRUE
-                                    /\ UNCHANGED << task, mm >>
-                         /\ pc' = [pc EXCEPT ![self] = "cs1"]
-                         /\ UNCHANGED << interrupts, prev_mm, freemms, 
-                                         runqueue, stack, _mm_m, _mm_mm, _mm, 
-                                         old_mm, active_mm, _mm_, prev, next >>
-
 cs1(self) == /\ pc[self] = "cs1"
+             /\ oldmm' = [oldmm EXCEPT ![self] = task[prev[self]].active_mm]
+             /\ IF task[next[self]].mm = "null"
+                   THEN /\ task' = [task EXCEPT ![next[self]].active_mm = oldmm'[self]]
+                        /\ mm' = [mm EXCEPT ![oldmm'[self]].mm_count = mm[oldmm'[self]].mm_count + 1]
+                        /\ UNCHANGED proc_mm
+                   ELSE /\ proc_mm' = [proc_mm EXCEPT ![task[self].cpu] = task[next[self]].mm]
+                        /\ UNCHANGED << task, mm >>
+             /\ pc' = [pc EXCEPT ![self] = "cs2"]
+             /\ UNCHANGED << interrupts, prev_mm, freemms, runqueue, stack, 
+                             _mm_m, _mm_mm, _mm, old_mm, active_mm, _mm_, prev, 
+                             next >>
+
+cs2(self) == /\ pc[self] = "cs2"
              /\ IF task[prev[self]].mm = "null"
                    THEN /\ task' = [task EXCEPT ![prev[self]].active_mm = "null"]
                         /\ prev_mm' = [prev_mm EXCEPT ![task'[self].cpu] = oldmm[self]]
                    ELSE /\ TRUE
                         /\ UNCHANGED << task, prev_mm >>
-             /\ pc' = [pc EXCEPT ![self] = "switch_to"]
-             /\ UNCHANGED << mm, interrupts, freemms, runqueue, stack, _mm_m, 
-                             _mm_mm, _mm, old_mm, active_mm, _mm_, prev, next, 
-                             oldmm >>
+             /\ pc' = [pc EXCEPT ![self] = "cs3"]
+             /\ UNCHANGED << mm, proc_mm, interrupts, freemms, runqueue, stack, 
+                             _mm_m, _mm_mm, _mm, old_mm, active_mm, _mm_, prev, 
+                             next, oldmm >>
 
-switch_to(self) == /\ pc[self] = "switch_to"
-                   /\ task' = [task EXCEPT ![next[self]].cpu = task[prev[self]].cpu,
-                                           ![prev[self]].cpu = "none"]
-                   /\ IF pc[prev[self]] # "Done" /\ prev[self] \notin PROCS
-                         THEN /\ runqueue' = (runqueue \cup {prev[self]})
-                         ELSE /\ TRUE
-                              /\ UNCHANGED runqueue
-                   /\ /\ oldmm' = [oldmm EXCEPT ![self] = Head(stack[self]).oldmm]
-                      /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "finish_task_switch",
-                                                               pc        |->  Head(stack[self]).pc ] >>
-                                                           \o Tail(stack[self])]
-                   /\ pc' = [pc EXCEPT ![self] = "fts1"]
-                   /\ UNCHANGED << mm, interrupts, prev_mm, freemms, _mm_m, 
-                                   _mm_mm, _mm, old_mm, active_mm, _mm_, prev, 
-                                   next >>
+cs3(self) == /\ pc[self] = "cs3"
+             /\ task' = [task EXCEPT ![next[self]].cpu = task[prev[self]].cpu,
+                                     ![prev[self]].cpu = "none"]
+             /\ IF task'[prev[self]].state = "running" /\ prev[self] \notin PROCS
+                   THEN /\ runqueue' = (runqueue \cup {prev[self]})
+                   ELSE /\ TRUE
+                        /\ UNCHANGED runqueue
+             /\ /\ oldmm' = [oldmm EXCEPT ![self] = Head(stack[self]).oldmm]
+                /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "finish_task_switch",
+                                                         pc        |->  Head(stack[self]).pc ] >>
+                                                     \o Tail(stack[self])]
+             /\ pc' = [pc EXCEPT ![self] = "fts1"]
+             /\ UNCHANGED << mm, proc_mm, interrupts, prev_mm, freemms, _mm_m, 
+                             _mm_mm, _mm, old_mm, active_mm, _mm_, prev, next >>
 
-context_switch(self) == context_switch_(self) \/ cs1(self)
-                           \/ switch_to(self)
+context_switch(self) == cs1(self) \/ cs2(self) \/ cs3(self)
 
 sch1(self) == /\ pc[self] = "sch1"
               /\ \E n \in IF runqueue # {} THEN runqueue ELSE {task[self].cpu}:
@@ -528,14 +538,14 @@ sch1(self) == /\ pc[self] = "sch1"
                                                                        next      |->  next[self] ] >>
                                                                    \o Tail(stack[self])]
                            /\ oldmm' = [oldmm EXCEPT ![self] = defaultInitValue]
-                           /\ pc' = [pc EXCEPT ![self] = "context_switch_"]
+                           /\ pc' = [pc EXCEPT ![self] = "cs1"]
                            /\ UNCHANGED interrupts
                       ELSE /\ interrupts' = [interrupts EXCEPT ![task[self].cpu] = "on"]
                            /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                            /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                            /\ UNCHANGED << runqueue, prev, next, oldmm >>
-              /\ UNCHANGED << task, mm, prev_mm, freemms, _mm_m, _mm_mm, _mm, 
-                              old_mm, active_mm, _mm_ >>
+              /\ UNCHANGED << task, mm, proc_mm, prev_mm, freemms, _mm_m, 
+                              _mm_mm, _mm, old_mm, active_mm, _mm_ >>
 
 schedule(self) == sch1(self)
 
@@ -545,9 +555,9 @@ handle_irq(self) == /\ pc[self] = "handle_irq"
                                                              pc        |->  Head(stack[self]).pc ] >>
                                                          \o Tail(stack[self])]
                     /\ pc' = [pc EXCEPT ![self] = "sch1"]
-                    /\ UNCHANGED << task, mm, prev_mm, freemms, runqueue, 
-                                    _mm_m, _mm_mm, _mm, old_mm, active_mm, 
-                                    _mm_, prev, next, oldmm >>
+                    /\ UNCHANGED << task, mm, proc_mm, prev_mm, freemms, 
+                                    runqueue, _mm_m, _mm_mm, _mm, old_mm, 
+                                    active_mm, _mm_, prev, next, oldmm >>
 
 interrupt(self) == handle_irq(self)
 
@@ -557,9 +567,9 @@ thread_init(self) == /\ pc[self] = "thread_init"
                                                               pc        |->  "thread_start" ] >>
                                                           \o stack[self]]
                      /\ pc' = [pc EXCEPT ![self] = "fts1"]
-                     /\ UNCHANGED << task, mm, interrupts, prev_mm, freemms, 
-                                     _mm_m, _mm_mm, _mm, old_mm, active_mm, 
-                                     _mm_, prev, next, oldmm >>
+                     /\ UNCHANGED << task, mm, proc_mm, interrupts, prev_mm, 
+                                     freemms, _mm_m, _mm_mm, _mm, old_mm, 
+                                     active_mm, _mm_, prev, next, oldmm >>
 
 thread_start(self) == /\ pc[self] = "thread_start"
                       /\ \/ /\ \E m \in freemms:
@@ -595,19 +605,19 @@ thread_start(self) == /\ pc[self] = "thread_start"
                                   ELSE /\ pc' = [pc EXCEPT ![self] = "thread_start"]
                                        /\ UNCHANGED << mm, stack, _mm_mm >>
                             /\ UNCHANGED <<freemms, _mm, old_mm, active_mm, _mm_>>
-                      /\ UNCHANGED << task, interrupts, prev_mm, runqueue, 
-                                      _mm_m, prev, next, oldmm >>
+                      /\ UNCHANGED << task, proc_mm, interrupts, prev_mm, 
+                                      runqueue, _mm_m, prev, next, oldmm >>
 
 t1(self) == /\ pc[self] = "t1"
             /\ pc' = [pc EXCEPT ![self] = "thread_end"]
-            /\ UNCHANGED << task, mm, interrupts, prev_mm, freemms, runqueue, 
-                            stack, _mm_m, _mm_mm, _mm, old_mm, active_mm, _mm_, 
-                            prev, next, oldmm >>
+            /\ UNCHANGED << task, mm, proc_mm, interrupts, prev_mm, freemms, 
+                            runqueue, stack, _mm_m, _mm_mm, _mm, old_mm, 
+                            active_mm, _mm_, prev, next, oldmm >>
 
 thread_end(self) == /\ pc[self] = "thread_end"
-                    /\ TRUE
+                    /\ task' = [task EXCEPT ![self].state = "dead"]
                     /\ pc' = [pc EXCEPT ![self] = "Done"]
-                    /\ UNCHANGED << task, mm, interrupts, prev_mm, freemms, 
+                    /\ UNCHANGED << mm, proc_mm, interrupts, prev_mm, freemms, 
                                     runqueue, stack, _mm_m, _mm_mm, _mm, 
                                     old_mm, active_mm, _mm_, prev, next, oldmm >>
 
@@ -615,11 +625,12 @@ thread(self) == thread_init(self) \/ thread_start(self) \/ t1(self)
                    \/ thread_end(self)
 
 idle_start(self) == /\ pc[self] = "idle_start"
-                    /\ task[self].cpu # "none"
+                    /\ Running(self)
                     /\ pc' = [pc EXCEPT ![self] = "idle_start"]
-                    /\ UNCHANGED << task, mm, interrupts, prev_mm, freemms, 
-                                    runqueue, stack, _mm_m, _mm_mm, _mm, 
-                                    old_mm, active_mm, _mm_, prev, next, oldmm >>
+                    /\ UNCHANGED << task, mm, proc_mm, interrupts, prev_mm, 
+                                    freemms, runqueue, stack, _mm_m, _mm_mm, 
+                                    _mm, old_mm, active_mm, _mm_, prev, next, 
+                                    oldmm >>
 
 idle(self) == idle_start(self)
 
