@@ -20,6 +20,9 @@ if grep -q -e "^\s*ProcessEnabled(self)\s*==" $SPEC.tla; then
 fi
 
 # Split << pc, stack >> out of the default vars and generate proc_vars
-sed -i -e "/^vars\s*==/,/>>/{s/\<vars\>/proc_vars/;s/\<pc,\s*\|\<stack,\s*//g;s/>>/>>\n\nvars == << proc_vars, pc, stack >>/}" $SPEC.tla
+# Match single line and multiline patterns
+SUBST="{s/\<vars\>/proc_vars/;s/\<pc,\s*\|\<stack,\s*//g;s/>>/>>\n     vars == << proc_vars, pc, stack >>/}"
+sed -i -e "/^vars\s*==.*>>$/$SUBST" $SPEC.tla
+sed -i -e "/^vars\s*==[^>]*/,/>>$/$SUBST" $SPEC.tla
 
 tlc -workers $(nproc) $@ $SPEC.tla | tee -a $SPEC.log
