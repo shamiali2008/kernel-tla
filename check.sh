@@ -4,8 +4,10 @@ set -e
 shopt -s expand_aliases
 
 export CLASSPATH=~/tla
+# Uncomment if TLC causes an exception in javax.activation.DataSource
+#export _JAVA_OPTIONS="--add-modules=java.activation"
 
-alias tlc="java --add-modules=java.activation tlc2.TLC"
+alias tlc="java tlc2.TLC"
 alias tla2sany="java tla2sany.SANY"
 alias pcal="java pcal.trans"
 alias tla2tex="java tla2tex.TLA"
