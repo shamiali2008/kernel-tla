@@ -306,10 +306,9 @@ Perms   == Permutations(PROCS) \cup Permutations(TASKS) \cup Permutations(MMS)
 
 VARIABLES _mm_, _mm_m, _mm, prev, next, oldmm
 
-proc_vars == << task, mm, proc_mm, interrupts, prev_mm, freemms, runqueue, 
-           _mm_, _mm_m, _mm, prev, next, oldmm >>
-
-vars == << proc_vars, pc, stack >>
+global_vars == << prev_mm, freemms, proc_mm, task, mm, runqueue, interrupts >>
+local_vars == << next, prev, _mm_m, oldmm, _mm, _mm_ >>
+vars == << global_vars, local_vars, pc, stack >>
 
 ProcSet == (TASKS) \cup (PROCS)
 
@@ -615,7 +614,7 @@ Interrupt(self) ==
 	\* non-reentrant handler
 	/\ pc[self] # "handle_irq"
 	/\ IntCall(self, "interrupt", "handle_irq")
-	/\ UNCHANGED proc_vars
+	/\ UNCHANGED << global_vars, local_vars >>
 
 PreemptNext == (\E self \in ProcSet : Interrupt(self)) \/ Next
 
