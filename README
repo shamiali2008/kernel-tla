@@ -64,3 +64,8 @@ arm64kpti.tla
 
 Model of the arm64 Linux KPTI support, checking the TLB separation
 (page table and ASIDs) between user, kernel, EFI mapping and idmap.
+
+fpsimd.tla
+----------
+
+Model of the FPSIMD/SVE register state saving and restoring.
