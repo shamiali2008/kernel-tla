@@ -972,6 +972,10 @@ thr3(self) == /\ pc[self] = "thr3"
 
 thread_(self) == thr1(self) \/ thr2(self) \/ thr3(self)
 
+(* Allow infinite stuttering to prevent deadlock on termination. *)
+Terminating == /\ \A self \in ProcSet: pc[self] = "Done"
+               /\ UNCHANGED vars
+
 Next == (\E self \in ProcSet:  \/ kernel_neon_begin(self)
                                \/ kernel_neon_end(self)
                                \/ fpsimd_restore_current_state(self)
@@ -981,8 +985,7 @@ Next == (\E self \in ProcSet:  \/ kernel_neon_begin(self)
                                \/ do_sve_acc(self) \/ kernel_neon(self)
                                \/ syscall(self))
            \/ (\E self \in THREADS: thread_(self))
-           \/ (* Disjunct to prevent deadlock on termination *)
-              ((\A self \in ProcSet: pc[self] = "Done") /\ UNCHANGED vars)
+           \/ Terminating
 
 Spec == Init /\ [][Next]_vars
 
