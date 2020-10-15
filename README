@@ -1,19 +1,18 @@
 This repository contains formal TLA+ specs of different algorithms used
-in the Linux kernel. So far it only contains asidalloc.tla (see below).
+in the Linux kernel.
 
-The TLA+ Tools need to be installed (together with a Java runtime):
+The recommended way to enable the checking of these specs is to use the
+TLA+ wrapper scripts:
 
-  https://lamport.azurewebsites.net/tla/tools.html (pre-built)
+  $ git clone https://github.com/pmer/tla-bin.git
+  $ ./download_or_update_tla.sh
+  $ ./install.sh $PREFIX
 
-or:
+The TLA+ Tools can also be downloaded directly from:
 
-  https://github.com/tlaplus/tlaplus/tree/master/tlatools (source)
+  https://lamport.azurewebsites.net/tla/tools.html
 
-The graphical TLA Toolbox is not required.
-
-CLASSPATH in check.sh needs to point to the TLA+ Tools installation
-directory.
-
+A Java runtime is required.
 
 asidalloc.tla
 -------------

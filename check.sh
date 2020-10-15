@@ -1,16 +1,10 @@
 #!/bin/bash
 
+# Download and install the TLA+ Tools wrapper scripts from
+# https://github.com/pmer/tla-bin.git
+
 set -e
 shopt -s expand_aliases
-
-export CLASSPATH=~/tla
-# Uncomment if TLC causes an exception in javax.activation.DataSource
-#export _JAVA_OPTIONS="--add-modules=java.activation"
-
-alias tlc="java tlc2.TLC"
-alias tla2sany="java tla2sany.SANY"
-alias pcal="java pcal.trans"
-alias tla2tex="java tla2tex.TLA"
 
 SPEC=$1
 shift
@@ -21,7 +15,7 @@ if grep -q -e "^\s*ProcessEnabled(self)\s*==" $SPEC.tla; then
 	sed -i -e 's%pc\[self\] = ".*"$%& /\\\ ProcessEnabled(self)%' $SPEC.tla
 fi
 
-# Generate{global,local}_vars
+# Split vars into {global,local}_vars tuples
 gawk -i inplace -f varsplit.awk $SPEC.tla
 
 tlc -workers $(nproc) $@ $SPEC.tla | tee -a $SPEC.log
