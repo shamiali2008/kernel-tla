@@ -11,6 +11,7 @@ CONSTANT	CPUS,		\* set of available CPUs
 		ASIDS,		\* number of ASIDs
 		GENERATIONS,	\* number of generations
 		TASKS,		\* set of context ids
+		TTU,		\* special task modifying the page table
 		CnP		\* test CnP or not
 
 ASSUME	/\ ASIDS \in Nat \ {0}
@@ -20,8 +21,9 @@ ASSUME	/\ ASIDS \in Nat \ {0}
 
 (* --algorithm asidalloc {
 variables
-	\* CPU TLB and TTBR model
+	\* CPU TLB and and page table model
 	tlb = {};
+	pte = [t \in TASKS |-> "mapped"];
 	active_mm = [c \in CPUS |-> [task |-> 0, asid |-> 0]];
 
 	\* ASID allocation algorithm state
@@ -65,6 +67,7 @@ define {
 		\* ASID 0 not allowed in the TLB (reserved)
 	TlbType ==	[task: TASKS, asid: 1..ASIDS-1, cpu: CPUS]
 	TTBRType ==	[task: TASKS \cup {0}, asid: 0..ASIDS-1]
+	PTEType ==	[TASKS -> {"mapped", "unmapped", "inval"}]
 	TypeInv ==	/\ cpu_asid_lock \in BOOLEAN
 			/\ asid_generation \in Nat \ {0}
 			/\ asid_map \in [0..ASIDS-1 -> BOOLEAN]
@@ -75,6 +78,7 @@ define {
 			/\ mm_context_id \in [TASKS -> AsidType]
 			/\ active_mm \in [CPUS -> TTBRType]
 			/\ tlb \subseteq TlbType
+			/\ pte \in PTEType
 
 	\*
 	\* Algorithm invariants
@@ -108,7 +112,11 @@ define {
 					/\ ActiveTask(c1) # 0
 					/\ ActiveTask(c2) # 0
 					/\ ActiveTask(c1) # ActiveTask(c2)
-					=> ActiveAsid(c1) # ActiveAsid(c2)
+		\* TLB empty for an active task/ASID following TLBI
+	TLBEmptyTask(task) ==	\A t \in tlb :
+					~(t.task = task /\ t.asid = mm_context_id[task].asid)
+	TLBEmptyInvalPTE ==	\A c \in CPUS : LET t == ActiveTask(c) IN
+					t # 0 /\ pte[t] = "inval" => TLBEmptyTask(t)
 
 	\* Symmetry optimisations
 	Perms == Permutations(CPUS) \cup Permutations(TASKS)
@@ -147,10 +155,15 @@ macro local_flush_tlb_all() {
 	tlb := {t \in tlb : t.cpu # self \/ t.task = ActiveTask(self)};
 }
 
+\* Remove entries corresponding to the given ASID
+macro flush_tlb_asid(asid) {
+	tlb := {t \in tlb : t.asid # asid};
+}
+
 macro cpu_switch_mm(t, a) {
 	active_mm[self].task := t || active_mm[self].asid := a;
 	\* A TLB entry can be speculatively loaded as soon as a new TTBR is set
-	if (t # 0)
+	if (t # 0 /\ pte[t] = "mapped")
 		tlb := tlb \cup {MakeTlbEntry(t, mm_context_id[t].asid, self)};
 }
 
@@ -301,6 +314,32 @@ fast_path:
 	return;
 }
 
+\* Unmap the pte for a given task
+procedure try_to_unmap(task)
+	variables asid;
+{
+pte_clear:
+	pte[task] := "unmapped";
+read_asid:
+	asid := mm_context_id[task].asid;
+tlbi:
+	flush_tlb_asid(asid);
+after_tlbi:
+	\* Mark pte as invalidated for invariant checking
+	pte[task] := "inval";
+	return;
+}
+
+\* Asynchronous process for unmapping PTEs
+process (ttu = TTU)
+{
+ttu:
+	while (TRUE) {
+		with (t \in TASKS)
+			call try_to_unmap(t);
+	}
+}
+
 process (sched \in CPUS)
 {
 sched_loop:
@@ -308,25 +347,28 @@ sched_loop:
 		with (t \in TASKS) {
 			if (t # ActiveTask(self))
 				call check_and_switch_context(t);
-		};
+		}
 	}
 }
 } *)
-\* BEGIN TRANSLATION
-\* Label flush_context of procedure flush_context at line 168 col 9 changed to flush_context_
-\* Label check_update_reserved_asid of procedure check_update_reserved_asid at line 192 col 9 changed to check_update_reserved_asid_
-\* Label new_context of procedure new_context at line 210 col 9 changed to new_context_
-\* Label check_and_switch_context of procedure check_and_switch_context at line 262 col 9 changed to check_and_switch_context_
-\* Label tlb_flush_pending of procedure check_and_switch_context at line 287 col 9 changed to tlb_flush_pending_
-\* Procedure variable asid of procedure flush_context at line 165 col 19 changed to asid_
-\* Procedure variable cpu of procedure flush_context at line 165 col 25 changed to cpu_
-\* Procedure variable cpus of procedure flush_context at line 165 col 30 changed to cpus_
-\* Procedure variable asid of procedure new_context at line 207 col 19 changed to asid_n
-\* Procedure variable newasid of procedure new_context at line 207 col 25 changed to newasid_
-\* Procedure variable asid of procedure check_and_switch_context at line 258 col 19 changed to asid_c
-\* Parameter task of procedure new_context at line 206 col 23 changed to task_
+\* BEGIN TRANSLATION - the hash of the PCal code: PCal-3b4c8093cab80710385baf7e614083a3
+\* Label flush_context of procedure flush_context at line 181 col 9 changed to flush_context_
+\* Label check_update_reserved_asid of procedure check_update_reserved_asid at line 205 col 9 changed to check_update_reserved_asid_
+\* Label new_context of procedure new_context at line 223 col 9 changed to new_context_
+\* Label check_and_switch_context of procedure check_and_switch_context at line 275 col 9 changed to check_and_switch_context_
+\* Label tlb_flush_pending of procedure check_and_switch_context at line 300 col 9 changed to tlb_flush_pending_
+\* Label ttu of process ttu at line 337 col 9 changed to ttu_
+\* Procedure variable asid of procedure flush_context at line 178 col 19 changed to asid_
+\* Procedure variable cpu of procedure flush_context at line 178 col 25 changed to cpu_
+\* Procedure variable cpus of procedure flush_context at line 178 col 30 changed to cpus_
+\* Procedure variable asid of procedure new_context at line 220 col 19 changed to asid_n
+\* Procedure variable newasid of procedure new_context at line 220 col 25 changed to newasid_
+\* Procedure variable asid of procedure check_and_switch_context at line 271 col 19 changed to asid_c
+\* Procedure variable asid of procedure try_to_unmap at line 319 col 19 changed to asid_t
+\* Parameter task of procedure new_context at line 219 col 23 changed to task_
+\* Parameter task of procedure check_and_switch_context at line 270 col 36 changed to task_c
 CONSTANT defaultInitValue
-VARIABLES tlb, active_mm, cpu_asid_lock, asid_generation, asid_map, 
+VARIABLES tlb, pte, active_mm, cpu_asid_lock, asid_generation, asid_map, 
           active_asids, reserved_asids, tlb_flush_pending, cur_idx, 
           mm_context_id, ret_check_update_reserved_asid, ret_new_context, pc, 
           stack
@@ -353,6 +395,7 @@ AsidType ==     [asid: 0..ASIDS-1, generation: 0..GENERATIONS]
 
 TlbType ==      [task: TASKS, asid: 1..ASIDS-1, cpu: CPUS]
 TTBRType ==     [task: TASKS \cup {0}, asid: 0..ASIDS-1]
+PTEType ==      [TASKS -> {"mapped", "unmapped", "inval"}]
 TypeInv ==      /\ cpu_asid_lock \in BOOLEAN
                 /\ asid_generation \in Nat \ {0}
                 /\ asid_map \in [0..ASIDS-1 -> BOOLEAN]
@@ -363,6 +406,7 @@ TypeInv ==      /\ cpu_asid_lock \in BOOLEAN
                 /\ mm_context_id \in [TASKS -> AsidType]
                 /\ active_mm \in [CPUS -> TTBRType]
                 /\ tlb \subseteq TlbType
+                /\ pte \in PTEType
 
 
 
@@ -396,7 +440,11 @@ UniqueASIDActiveTask == \/ ~CnP
                                 /\ ActiveTask(c1) # 0
                                 /\ ActiveTask(c2) # 0
                                 /\ ActiveTask(c1) # ActiveTask(c2)
-                                => ActiveAsid(c1) # ActiveAsid(c2)
+
+TLBEmptyTask(task) ==   \A t \in tlb :
+                                ~(t.task = task /\ t.asid = mm_context_id[task].asid)
+TLBEmptyInvalPTE ==     \A c \in CPUS : LET t == ActiveTask(c) IN
+                                t # 0 /\ pte[t] = "inval" => TLBEmptyTask(t)
 
 
 Perms == Permutations(CPUS) \cup Permutations(TASKS)
@@ -405,18 +453,18 @@ Perms == Permutations(CPUS) \cup Permutations(TASKS)
 Constr == asid_generation <= GENERATIONS
 
 VARIABLES asid_, cpu_, cpus_, asid, newasid, cpu, cpus, task_, asid_n, 
-          newasid_, generation, old, task, asid_c, old_active_asid
+          newasid_, generation, old, task_c, asid_c, old_active_asid, task, 
+          asid_t
 
-vars == << tlb, active_mm, cpu_asid_lock, asid_generation, asid_map, 
-           active_asids, reserved_asids, tlb_flush_pending, cur_idx, 
-           mm_context_id, ret_check_update_reserved_asid, ret_new_context, pc, 
-           stack, asid_, cpu_, cpus_, asid, newasid, cpu, cpus, task_, asid_n, 
-           newasid_, generation, old, task, asid_c, old_active_asid >>
+global_vars == << asid_map, active_asids, ret_new_context, tlb_flush_pending, reserved_asids, cur_idx, mm_context_id, cpu_asid_lock, tlb, ret_check_update_reserved_asid, asid_generation, active_mm, pte >>
+local_vars == << task_, asid_, newasid_, asid, cpu_, generation, cpus_, asid_n, asid_c, newasid, task, old, cpus, cpu, old_active_asid, asid_t, task_c >>
+vars == << global_vars, local_vars, pc, stack >>
 
-ProcSet == (CPUS)
+ProcSet == {TTU} \cup (CPUS)
 
 Init == (* Global variables *)
         /\ tlb = {}
+        /\ pte = [t \in TASKS |-> "mapped"]
         /\ active_mm = [c \in CPUS |-> [task |-> 0, asid |-> 0]]
         /\ cpu_asid_lock = FALSE
         /\ asid_generation = 1
@@ -444,17 +492,21 @@ Init == (* Global variables *)
         /\ generation = [ self \in ProcSet |-> defaultInitValue]
         /\ old = [ self \in ProcSet |-> defaultInitValue]
         (* Procedure check_and_switch_context *)
-        /\ task = [ self \in ProcSet |-> 0]
+        /\ task_c = [ self \in ProcSet |-> 0]
         /\ asid_c = [ self \in ProcSet |-> defaultInitValue]
         /\ old_active_asid = [ self \in ProcSet |-> defaultInitValue]
+        (* Procedure try_to_unmap *)
+        /\ task = [ self \in ProcSet |-> defaultInitValue]
+        /\ asid_t = [ self \in ProcSet |-> defaultInitValue]
         /\ stack = [self \in ProcSet |-> << >>]
-        /\ pc = [self \in ProcSet |-> "sched_loop"]
+        /\ pc = [self \in ProcSet |-> CASE self = TTU -> "ttu_"
+                                        [] self \in CPUS -> "sched_loop"]
 
 flush_context_(self) == /\ pc[self] = "flush_context_"
                         /\ asid_map' = [i \in 0..ASIDS-1 |-> FALSE]
                         /\ cpus_' = [cpus_ EXCEPT ![self] = CPUS]
                         /\ pc' = [pc EXCEPT ![self] = "flush_context_for_each_cpu"]
-                        /\ UNCHANGED << tlb, active_mm, cpu_asid_lock, 
+                        /\ UNCHANGED << tlb, pte, active_mm, cpu_asid_lock, 
                                         asid_generation, active_asids, 
                                         reserved_asids, tlb_flush_pending, 
                                         cur_idx, mm_context_id, 
@@ -462,7 +514,8 @@ flush_context_(self) == /\ pc[self] = "flush_context_"
                                         ret_new_context, stack, asid_, cpu_, 
                                         asid, newasid, cpu, cpus, task_, 
                                         asid_n, newasid_, generation, old, 
-                                        task, asid_c, old_active_asid >>
+                                        task_c, asid_c, old_active_asid, task, 
+                                        asid_t >>
 
 flush_context_for_each_cpu(self) == /\ pc[self] = "flush_context_for_each_cpu"
                                     /\ IF cpus_[self] # {}
@@ -479,7 +532,7 @@ flush_context_for_each_cpu(self) == /\ pc[self] = "flush_context_for_each_cpu"
                                                /\ cpus_' = [cpus_ EXCEPT ![self] = Head(stack[self]).cpus_]
                                                /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                                                /\ UNCHANGED active_asids
-                                    /\ UNCHANGED << tlb, active_mm, 
+                                    /\ UNCHANGED << tlb, pte, active_mm, 
                                                     cpu_asid_lock, 
                                                     asid_generation, asid_map, 
                                                     reserved_asids, cur_idx, 
@@ -488,8 +541,9 @@ flush_context_for_each_cpu(self) == /\ pc[self] = "flush_context_for_each_cpu"
                                                     ret_new_context, asid, 
                                                     newasid, cpu, cpus, task_, 
                                                     asid_n, newasid_, 
-                                                    generation, old, task, 
-                                                    asid_c, old_active_asid >>
+                                                    generation, old, task_c, 
+                                                    asid_c, old_active_asid, 
+                                                    task, asid_t >>
 
 flush_context_asid0_check(self) == /\ pc[self] = "flush_context_asid0_check"
                                    /\ IF asid_[self] = NULL_ASID
@@ -500,7 +554,7 @@ flush_context_asid0_check(self) == /\ pc[self] = "flush_context_asid0_check"
                                    /\ reserved_asids' = [reserved_asids EXCEPT ![cpu_[self]] = asid_'[self]]
                                    /\ cpus_' = [cpus_ EXCEPT ![self] = cpus_[self] \ {cpu_[self]}]
                                    /\ pc' = [pc EXCEPT ![self] = "flush_context_for_each_cpu"]
-                                   /\ UNCHANGED << tlb, active_mm, 
+                                   /\ UNCHANGED << tlb, pte, active_mm, 
                                                    cpu_asid_lock, 
                                                    asid_generation, 
                                                    active_asids, 
@@ -511,8 +565,9 @@ flush_context_asid0_check(self) == /\ pc[self] = "flush_context_asid0_check"
                                                    cpu_, asid, newasid, cpu, 
                                                    cpus, task_, asid_n, 
                                                    newasid_, generation, old, 
-                                                   task, asid_c, 
-                                                   old_active_asid >>
+                                                   task_c, asid_c, 
+                                                   old_active_asid, task, 
+                                                   asid_t >>
 
 flush_context(self) == flush_context_(self)
                           \/ flush_context_for_each_cpu(self)
@@ -522,7 +577,7 @@ check_update_reserved_asid_(self) == /\ pc[self] = "check_update_reserved_asid_"
                                      /\ ret_check_update_reserved_asid' = [ret_check_update_reserved_asid EXCEPT ![self] = FALSE]
                                      /\ cpus' = [cpus EXCEPT ![self] = CPUS]
                                      /\ pc' = [pc EXCEPT ![self] = "check_update_reserved_asid_for_each_cpu"]
-                                     /\ UNCHANGED << tlb, active_mm, 
+                                     /\ UNCHANGED << tlb, pte, active_mm, 
                                                      cpu_asid_lock, 
                                                      asid_generation, asid_map, 
                                                      active_asids, 
@@ -533,8 +588,9 @@ check_update_reserved_asid_(self) == /\ pc[self] = "check_update_reserved_asid_"
                                                      asid_, cpu_, cpus_, asid, 
                                                      newasid, cpu, task_, 
                                                      asid_n, newasid_, 
-                                                     generation, old, task, 
-                                                     asid_c, old_active_asid >>
+                                                     generation, old, task_c, 
+                                                     asid_c, old_active_asid, 
+                                                     task, asid_t >>
 
 check_update_reserved_asid_for_each_cpu(self) == /\ pc[self] = "check_update_reserved_asid_for_each_cpu"
                                                  /\ IF cpus[self] # {}
@@ -558,7 +614,7 @@ check_update_reserved_asid_for_each_cpu(self) == /\ pc[self] = "check_update_res
                                                             /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                                                             /\ UNCHANGED << reserved_asids, 
                                                                             ret_check_update_reserved_asid >>
-                                                 /\ UNCHANGED << tlb, 
+                                                 /\ UNCHANGED << tlb, pte, 
                                                                  active_mm, 
                                                                  cpu_asid_lock, 
                                                                  asid_generation, 
@@ -573,9 +629,10 @@ check_update_reserved_asid_for_each_cpu(self) == /\ pc[self] = "check_update_res
                                                                  asid_n, 
                                                                  newasid_, 
                                                                  generation, 
-                                                                 old, task, 
+                                                                 old, task_c, 
                                                                  asid_c, 
-                                                                 old_active_asid >>
+                                                                 old_active_asid, 
+                                                                 task, asid_t >>
 
 check_update_reserved_asid(self) == check_update_reserved_asid_(self)
                                        \/ check_update_reserved_asid_for_each_cpu(self)
@@ -600,14 +657,14 @@ new_context_(self) == /\ pc[self] = "new_context_"
                             ELSE /\ pc' = [pc EXCEPT ![self] = "new_context_allocate_free_asid"]
                                  /\ UNCHANGED << stack, asid, newasid, cpu, 
                                                  cpus, newasid_ >>
-                      /\ UNCHANGED << tlb, active_mm, cpu_asid_lock, 
+                      /\ UNCHANGED << tlb, pte, active_mm, cpu_asid_lock, 
                                       asid_generation, asid_map, active_asids, 
                                       reserved_asids, tlb_flush_pending, 
                                       cur_idx, mm_context_id, 
                                       ret_check_update_reserved_asid, 
                                       ret_new_context, asid_, cpu_, cpus_, 
-                                      task_, old, task, asid_c, 
-                                      old_active_asid >>
+                                      task_, old, task_c, asid_c, 
+                                      old_active_asid, task, asid_t >>
 
 new_context_ret_from_check_update_reserved_asid(self) == /\ pc[self] = "new_context_ret_from_check_update_reserved_asid"
                                                          /\ IF ret_check_update_reserved_asid[self]
@@ -628,6 +685,7 @@ new_context_ret_from_check_update_reserved_asid(self) == /\ pc[self] = "new_cont
                                                                                     generation, 
                                                                                     old >>
                                                          /\ UNCHANGED << tlb, 
+                                                                         pte, 
                                                                          active_mm, 
                                                                          cpu_asid_lock, 
                                                                          asid_generation, 
@@ -645,9 +703,11 @@ new_context_ret_from_check_update_reserved_asid(self) == /\ pc[self] = "new_cont
                                                                          newasid, 
                                                                          cpu, 
                                                                          cpus, 
-                                                                         task, 
+                                                                         task_c, 
                                                                          asid_c, 
-                                                                         old_active_asid >>
+                                                                         old_active_asid, 
+                                                                         task, 
+                                                                         asid_t >>
 
 new_context_ret_from_check_update_reserved_asid_end(self) == /\ pc[self] = "new_context_ret_from_check_update_reserved_asid_end"
                                                              /\ old' = [old EXCEPT ![self] = asid_map[asid_n[self].asid]]
@@ -658,6 +718,7 @@ new_context_ret_from_check_update_reserved_asid_end(self) == /\ pc[self] = "new_
                                                                    ELSE /\ pc' = [pc EXCEPT ![self] = "new_context_allocate_free_asid"]
                                                                         /\ UNCHANGED ret_new_context
                                                              /\ UNCHANGED << tlb, 
+                                                                             pte, 
                                                                              active_mm, 
                                                                              cpu_asid_lock, 
                                                                              asid_generation, 
@@ -679,9 +740,11 @@ new_context_ret_from_check_update_reserved_asid_end(self) == /\ pc[self] = "new_
                                                                              asid_n, 
                                                                              newasid_, 
                                                                              generation, 
-                                                                             task, 
+                                                                             task_c, 
                                                                              asid_c, 
-                                                                             old_active_asid >>
+                                                                             old_active_asid, 
+                                                                             task, 
+                                                                             asid_t >>
 
 new_context_return(self) == /\ pc[self] = "new_context_return"
                             /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
@@ -691,7 +754,7 @@ new_context_return(self) == /\ pc[self] = "new_context_return"
                             /\ old' = [old EXCEPT ![self] = Head(stack[self]).old]
                             /\ task_' = [task_ EXCEPT ![self] = Head(stack[self]).task_]
                             /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                            /\ UNCHANGED << tlb, active_mm, cpu_asid_lock, 
+                            /\ UNCHANGED << tlb, pte, active_mm, cpu_asid_lock, 
                                             asid_generation, asid_map, 
                                             active_asids, reserved_asids, 
                                             tlb_flush_pending, cur_idx, 
@@ -699,7 +762,8 @@ new_context_return(self) == /\ pc[self] = "new_context_return"
                                             ret_check_update_reserved_asid, 
                                             ret_new_context, asid_, cpu_, 
                                             cpus_, asid, newasid, cpu, cpus, 
-                                            task, asid_c, old_active_asid >>
+                                            task_c, asid_c, old_active_asid, 
+                                            task, asid_t >>
 
 new_context_allocate_free_asid(self) == /\ pc[self] = "new_context_allocate_free_asid"
                                         /\ IF EmptySlots(asid_map, cur_idx)
@@ -707,7 +771,7 @@ new_context_allocate_free_asid(self) == /\ pc[self] = "new_context_allocate_free
                                                    /\ pc' = [pc EXCEPT ![self] = "set_asid"]
                                               ELSE /\ pc' = [pc EXCEPT ![self] = "new_context_out_of_asids"]
                                                    /\ UNCHANGED asid_n
-                                        /\ UNCHANGED << tlb, active_mm, 
+                                        /\ UNCHANGED << tlb, pte, active_mm, 
                                                         cpu_asid_lock, 
                                                         asid_generation, 
                                                         asid_map, active_asids, 
@@ -719,9 +783,10 @@ new_context_allocate_free_asid(self) == /\ pc[self] = "new_context_allocate_free
                                                         asid_, cpu_, cpus_, 
                                                         asid, newasid, cpu, 
                                                         cpus, task_, newasid_, 
-                                                        generation, old, task, 
-                                                        asid_c, 
-                                                        old_active_asid >>
+                                                        generation, old, 
+                                                        task_c, asid_c, 
+                                                        old_active_asid, task, 
+                                                        asid_t >>
 
 new_context_out_of_asids(self) == /\ pc[self] = "new_context_out_of_asids"
                                   /\ asid_generation' = asid_generation + 1
@@ -736,7 +801,7 @@ new_context_out_of_asids(self) == /\ pc[self] = "new_context_out_of_asids"
                                   /\ cpu_' = [cpu_ EXCEPT ![self] = defaultInitValue]
                                   /\ cpus_' = [cpus_ EXCEPT ![self] = defaultInitValue]
                                   /\ pc' = [pc EXCEPT ![self] = "flush_context_"]
-                                  /\ UNCHANGED << tlb, active_mm, 
+                                  /\ UNCHANGED << tlb, pte, active_mm, 
                                                   cpu_asid_lock, asid_map, 
                                                   active_asids, reserved_asids, 
                                                   tlb_flush_pending, cur_idx, 
@@ -744,13 +809,15 @@ new_context_out_of_asids(self) == /\ pc[self] = "new_context_out_of_asids"
                                                   ret_check_update_reserved_asid, 
                                                   ret_new_context, asid, 
                                                   newasid, cpu, cpus, task_, 
-                                                  asid_n, newasid_, old, task, 
-                                                  asid_c, old_active_asid >>
+                                                  asid_n, newasid_, old, 
+                                                  task_c, asid_c, 
+                                                  old_active_asid, task, 
+                                                  asid_t >>
 
 new_context_ret_flush_context(self) == /\ pc[self] = "new_context_ret_flush_context"
                                        /\ asid_n' = [asid_n EXCEPT ![self].asid = FindEmptySlot(asid_map, 1)]
                                        /\ pc' = [pc EXCEPT ![self] = "set_asid"]
-                                       /\ UNCHANGED << tlb, active_mm, 
+                                       /\ UNCHANGED << tlb, pte, active_mm, 
                                                        cpu_asid_lock, 
                                                        asid_generation, 
                                                        asid_map, active_asids, 
@@ -762,8 +829,9 @@ new_context_ret_flush_context(self) == /\ pc[self] = "new_context_ret_flush_cont
                                                        asid_, cpu_, cpus_, 
                                                        asid, newasid, cpu, 
                                                        cpus, task_, newasid_, 
-                                                       generation, old, task, 
-                                                       asid_c, old_active_asid >>
+                                                       generation, old, task_c, 
+                                                       asid_c, old_active_asid, 
+                                                       task, asid_t >>
 
 set_asid(self) == /\ pc[self] = "set_asid"
                   /\ asid_map' = [asid_map EXCEPT ![asid_n[self].asid] = TRUE]
@@ -776,13 +844,13 @@ set_asid(self) == /\ pc[self] = "set_asid"
                   /\ old' = [old EXCEPT ![self] = Head(stack[self]).old]
                   /\ task_' = [task_ EXCEPT ![self] = Head(stack[self]).task_]
                   /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                  /\ UNCHANGED << tlb, active_mm, cpu_asid_lock, 
+                  /\ UNCHANGED << tlb, pte, active_mm, cpu_asid_lock, 
                                   asid_generation, active_asids, 
                                   reserved_asids, tlb_flush_pending, 
                                   mm_context_id, 
                                   ret_check_update_reserved_asid, asid_, cpu_, 
-                                  cpus_, asid, newasid, cpu, cpus, task, 
-                                  asid_c, old_active_asid >>
+                                  cpus_, asid, newasid, cpu, cpus, task_c, 
+                                  asid_c, old_active_asid, task, asid_t >>
 
 new_context(self) == new_context_(self)
                         \/ new_context_ret_from_check_update_reserved_asid(self)
@@ -797,16 +865,16 @@ check_and_switch_context_(self) == /\ pc[self] = "check_and_switch_context_"
                                    /\ IF CnP
                                          THEN /\ active_mm' = [active_mm EXCEPT ![self].task = 0,
                                                                                 ![self].asid = ActiveAsid(self)]
-                                              /\ IF 0 # 0
+                                              /\ IF 0 # 0 /\ pte[0] = "mapped"
                                                     THEN /\ tlb' = (tlb \cup {MakeTlbEntry(0, mm_context_id[0].asid, self)})
                                                     ELSE /\ TRUE
                                                          /\ tlb' = tlb
                                          ELSE /\ TRUE
                                               /\ UNCHANGED << tlb, active_mm >>
-                                   /\ asid_c' = [asid_c EXCEPT ![self] = mm_context_id[task[self]]]
+                                   /\ asid_c' = [asid_c EXCEPT ![self] = mm_context_id[task_c[self]]]
                                    /\ old_active_asid' = [old_active_asid EXCEPT ![self] = active_asids[self]]
                                    /\ pc' = [pc EXCEPT ![self] = "check_current_generation"]
-                                   /\ UNCHANGED << cpu_asid_lock, 
+                                   /\ UNCHANGED << pte, cpu_asid_lock, 
                                                    asid_generation, asid_map, 
                                                    active_asids, 
                                                    reserved_asids, 
@@ -817,13 +885,14 @@ check_and_switch_context_(self) == /\ pc[self] = "check_and_switch_context_"
                                                    asid_, cpu_, cpus_, asid, 
                                                    newasid, cpu, cpus, task_, 
                                                    asid_n, newasid_, 
-                                                   generation, old, task >>
+                                                   generation, old, task_c, 
+                                                   task, asid_t >>
 
 check_current_generation(self) == /\ pc[self] = "check_current_generation"
                                   /\ IF old_active_asid[self] # NULL_ASID /\ asid_c[self].generation = asid_generation
                                         THEN /\ pc' = [pc EXCEPT ![self] = "cmpxchg_active_asids"]
                                         ELSE /\ pc' = [pc EXCEPT ![self] = "slow_path"]
-                                  /\ UNCHANGED << tlb, active_mm, 
+                                  /\ UNCHANGED << tlb, pte, active_mm, 
                                                   cpu_asid_lock, 
                                                   asid_generation, asid_map, 
                                                   active_asids, reserved_asids, 
@@ -834,8 +903,9 @@ check_current_generation(self) == /\ pc[self] = "check_current_generation"
                                                   asid_, cpu_, cpus_, asid, 
                                                   newasid, cpu, cpus, task_, 
                                                   asid_n, newasid_, generation, 
-                                                  old, task, asid_c, 
-                                                  old_active_asid >>
+                                                  old, task_c, asid_c, 
+                                                  old_active_asid, task, 
+                                                  asid_t >>
 
 cmpxchg_active_asids(self) == /\ pc[self] = "cmpxchg_active_asids"
                               /\ IF (active_asids[self]) = old_active_asid[self]
@@ -844,22 +914,23 @@ cmpxchg_active_asids(self) == /\ pc[self] = "cmpxchg_active_asids"
                                     ELSE /\ old_active_asid' = [old_active_asid EXCEPT ![self] = active_asids[self]]
                                          /\ UNCHANGED active_asids
                               /\ pc' = [pc EXCEPT ![self] = "check_roll_over"]
-                              /\ UNCHANGED << tlb, active_mm, cpu_asid_lock, 
-                                              asid_generation, asid_map, 
-                                              reserved_asids, 
+                              /\ UNCHANGED << tlb, pte, active_mm, 
+                                              cpu_asid_lock, asid_generation, 
+                                              asid_map, reserved_asids, 
                                               tlb_flush_pending, cur_idx, 
                                               mm_context_id, 
                                               ret_check_update_reserved_asid, 
                                               ret_new_context, stack, asid_, 
                                               cpu_, cpus_, asid, newasid, cpu, 
                                               cpus, task_, asid_n, newasid_, 
-                                              generation, old, task, asid_c >>
+                                              generation, old, task_c, asid_c, 
+                                              task, asid_t >>
 
 check_roll_over(self) == /\ pc[self] = "check_roll_over"
                          /\ IF old_active_asid[self] # NULL_ASID
                                THEN /\ pc' = [pc EXCEPT ![self] = "fast_path"]
                                ELSE /\ pc' = [pc EXCEPT ![self] = "slow_path"]
-                         /\ UNCHANGED << tlb, active_mm, cpu_asid_lock, 
+                         /\ UNCHANGED << tlb, pte, active_mm, cpu_asid_lock, 
                                          asid_generation, asid_map, 
                                          active_asids, reserved_asids, 
                                          tlb_flush_pending, cur_idx, 
@@ -868,12 +939,13 @@ check_roll_over(self) == /\ pc[self] = "check_roll_over"
                                          ret_new_context, stack, asid_, cpu_, 
                                          cpus_, asid, newasid, cpu, cpus, 
                                          task_, asid_n, newasid_, generation, 
-                                         old, task, asid_c, old_active_asid >>
+                                         old, task_c, asid_c, old_active_asid, 
+                                         task, asid_t >>
 
 slow_path(self) == /\ pc[self] = "slow_path"
                    /\ ~cpu_asid_lock
                    /\ cpu_asid_lock' = TRUE
-                   /\ asid_c' = [asid_c EXCEPT ![self] = mm_context_id[task[self]]]
+                   /\ asid_c' = [asid_c EXCEPT ![self] = mm_context_id[task_c[self]]]
                    /\ IF asid_c'[self].generation # asid_generation
                          THEN /\ /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "new_context",
                                                                           pc        |->  "check_and_switch_context_ret_new_context",
@@ -883,7 +955,7 @@ slow_path(self) == /\ pc[self] = "slow_path"
                                                                           old       |->  old[self],
                                                                           task_     |->  task_[self] ] >>
                                                                       \o stack[self]]
-                                 /\ task_' = [task_ EXCEPT ![self] = task[self]]
+                                 /\ task_' = [task_ EXCEPT ![self] = task_c[self]]
                               /\ asid_n' = [asid_n EXCEPT ![self] = defaultInitValue]
                               /\ newasid_' = [newasid_ EXCEPT ![self] = defaultInitValue]
                               /\ generation' = [generation EXCEPT ![self] = defaultInitValue]
@@ -892,18 +964,19 @@ slow_path(self) == /\ pc[self] = "slow_path"
                          ELSE /\ pc' = [pc EXCEPT ![self] = "tlb_flush_pending_"]
                               /\ UNCHANGED << stack, task_, asid_n, newasid_, 
                                               generation, old >>
-                   /\ UNCHANGED << tlb, active_mm, asid_generation, asid_map, 
-                                   active_asids, reserved_asids, 
+                   /\ UNCHANGED << tlb, pte, active_mm, asid_generation, 
+                                   asid_map, active_asids, reserved_asids, 
                                    tlb_flush_pending, cur_idx, mm_context_id, 
                                    ret_check_update_reserved_asid, 
                                    ret_new_context, asid_, cpu_, cpus_, asid, 
-                                   newasid, cpu, cpus, task, old_active_asid >>
+                                   newasid, cpu, cpus, task_c, old_active_asid, 
+                                   task, asid_t >>
 
 check_and_switch_context_ret_new_context(self) == /\ pc[self] = "check_and_switch_context_ret_new_context"
                                                   /\ asid_c' = [asid_c EXCEPT ![self] = ret_new_context[self]]
-                                                  /\ mm_context_id' = [mm_context_id EXCEPT ![task[self]] = asid_c'[self]]
+                                                  /\ mm_context_id' = [mm_context_id EXCEPT ![task_c[self]] = asid_c'[self]]
                                                   /\ pc' = [pc EXCEPT ![self] = "tlb_flush_pending_"]
-                                                  /\ UNCHANGED << tlb, 
+                                                  /\ UNCHANGED << tlb, pte, 
                                                                   active_mm, 
                                                                   cpu_asid_lock, 
                                                                   asid_generation, 
@@ -922,8 +995,9 @@ check_and_switch_context_ret_new_context(self) == /\ pc[self] = "check_and_switc
                                                                   asid_n, 
                                                                   newasid_, 
                                                                   generation, 
-                                                                  old, task, 
-                                                                  old_active_asid >>
+                                                                  old, task_c, 
+                                                                  old_active_asid, 
+                                                                  task, asid_t >>
 
 tlb_flush_pending_(self) == /\ pc[self] = "tlb_flush_pending_"
                             /\ IF tlb_flush_pending[self]
@@ -935,7 +1009,7 @@ tlb_flush_pending_(self) == /\ pc[self] = "tlb_flush_pending_"
                                   ELSE /\ TRUE
                                        /\ UNCHANGED << tlb, tlb_flush_pending >>
                             /\ pc' = [pc EXCEPT ![self] = "set_active_asids"]
-                            /\ UNCHANGED << active_mm, cpu_asid_lock, 
+                            /\ UNCHANGED << pte, active_mm, cpu_asid_lock, 
                                             asid_generation, asid_map, 
                                             active_asids, reserved_asids, 
                                             cur_idx, mm_context_id, 
@@ -943,14 +1017,14 @@ tlb_flush_pending_(self) == /\ pc[self] = "tlb_flush_pending_"
                                             ret_new_context, stack, asid_, 
                                             cpu_, cpus_, asid, newasid, cpu, 
                                             cpus, task_, asid_n, newasid_, 
-                                            generation, old, task, asid_c, 
-                                            old_active_asid >>
+                                            generation, old, task_c, asid_c, 
+                                            old_active_asid, task, asid_t >>
 
 set_active_asids(self) == /\ pc[self] = "set_active_asids"
                           /\ active_asids' = [active_asids EXCEPT ![self] = asid_c[self]]
                           /\ cpu_asid_lock' = FALSE
                           /\ pc' = [pc EXCEPT ![self] = "fast_path"]
-                          /\ UNCHANGED << tlb, active_mm, asid_generation, 
+                          /\ UNCHANGED << tlb, pte, active_mm, asid_generation, 
                                           asid_map, reserved_asids, 
                                           tlb_flush_pending, cur_idx, 
                                           mm_context_id, 
@@ -958,27 +1032,28 @@ set_active_asids(self) == /\ pc[self] = "set_active_asids"
                                           ret_new_context, stack, asid_, cpu_, 
                                           cpus_, asid, newasid, cpu, cpus, 
                                           task_, asid_n, newasid_, generation, 
-                                          old, task, asid_c, old_active_asid >>
+                                          old, task_c, asid_c, old_active_asid, 
+                                          task, asid_t >>
 
 fast_path(self) == /\ pc[self] = "fast_path"
-                   /\ active_mm' = [active_mm EXCEPT ![self].task = task[self],
+                   /\ active_mm' = [active_mm EXCEPT ![self].task = task_c[self],
                                                      ![self].asid = asid_c[self].asid]
-                   /\ IF task[self] # 0
-                         THEN /\ tlb' = (tlb \cup {MakeTlbEntry(task[self], mm_context_id[task[self]].asid, self)})
+                   /\ IF task_c[self] # 0 /\ pte[task_c[self]] = "mapped"
+                         THEN /\ tlb' = (tlb \cup {MakeTlbEntry(task_c[self], mm_context_id[task_c[self]].asid, self)})
                          ELSE /\ TRUE
                               /\ tlb' = tlb
                    /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                    /\ asid_c' = [asid_c EXCEPT ![self] = Head(stack[self]).asid_c]
                    /\ old_active_asid' = [old_active_asid EXCEPT ![self] = Head(stack[self]).old_active_asid]
-                   /\ task' = [task EXCEPT ![self] = Head(stack[self]).task]
+                   /\ task_c' = [task_c EXCEPT ![self] = Head(stack[self]).task_c]
                    /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                   /\ UNCHANGED << cpu_asid_lock, asid_generation, asid_map, 
-                                   active_asids, reserved_asids, 
+                   /\ UNCHANGED << pte, cpu_asid_lock, asid_generation, 
+                                   asid_map, active_asids, reserved_asids, 
                                    tlb_flush_pending, cur_idx, mm_context_id, 
                                    ret_check_update_reserved_asid, 
                                    ret_new_context, asid_, cpu_, cpus_, asid, 
                                    newasid, cpu, cpus, task_, asid_n, newasid_, 
-                                   generation, old >>
+                                   generation, old, task, asid_t >>
 
 check_and_switch_context(self) == check_and_switch_context_(self)
                                      \/ check_current_generation(self)
@@ -990,22 +1065,49 @@ check_and_switch_context(self) == check_and_switch_context_(self)
                                      \/ set_active_asids(self)
                                      \/ fast_path(self)
 
-sched_loop(self) == /\ pc[self] = "sched_loop"
-                    /\ \E t \in TASKS:
-                         IF t # ActiveTask(self)
-                            THEN /\ /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "check_and_switch_context",
-                                                                             pc        |->  "sched_loop",
-                                                                             asid_c    |->  asid_c[self],
-                                                                             old_active_asid |->  old_active_asid[self],
-                                                                             task      |->  task[self] ] >>
-                                                                         \o stack[self]]
-                                    /\ task' = [task EXCEPT ![self] = t]
-                                 /\ asid_c' = [asid_c EXCEPT ![self] = defaultInitValue]
-                                 /\ old_active_asid' = [old_active_asid EXCEPT ![self] = defaultInitValue]
-                                 /\ pc' = [pc EXCEPT ![self] = "check_and_switch_context_"]
-                            ELSE /\ pc' = [pc EXCEPT ![self] = "sched_loop"]
-                                 /\ UNCHANGED << stack, task, asid_c, 
-                                                 old_active_asid >>
+pte_clear(self) == /\ pc[self] = "pte_clear"
+                   /\ pte' = [pte EXCEPT ![task[self]] = "unmapped"]
+                   /\ pc' = [pc EXCEPT ![self] = "read_asid"]
+                   /\ UNCHANGED << tlb, active_mm, cpu_asid_lock, 
+                                   asid_generation, asid_map, active_asids, 
+                                   reserved_asids, tlb_flush_pending, cur_idx, 
+                                   mm_context_id, 
+                                   ret_check_update_reserved_asid, 
+                                   ret_new_context, stack, asid_, cpu_, cpus_, 
+                                   asid, newasid, cpu, cpus, task_, asid_n, 
+                                   newasid_, generation, old, task_c, asid_c, 
+                                   old_active_asid, task, asid_t >>
+
+read_asid(self) == /\ pc[self] = "read_asid"
+                   /\ asid_t' = [asid_t EXCEPT ![self] = mm_context_id[task[self]].asid]
+                   /\ pc' = [pc EXCEPT ![self] = "tlbi"]
+                   /\ UNCHANGED << tlb, pte, active_mm, cpu_asid_lock, 
+                                   asid_generation, asid_map, active_asids, 
+                                   reserved_asids, tlb_flush_pending, cur_idx, 
+                                   mm_context_id, 
+                                   ret_check_update_reserved_asid, 
+                                   ret_new_context, stack, asid_, cpu_, cpus_, 
+                                   asid, newasid, cpu, cpus, task_, asid_n, 
+                                   newasid_, generation, old, task_c, asid_c, 
+                                   old_active_asid, task >>
+
+tlbi(self) == /\ pc[self] = "tlbi"
+              /\ tlb' = {t \in tlb : t.asid # asid_t[self]}
+              /\ pc' = [pc EXCEPT ![self] = "after_tlbi"]
+              /\ UNCHANGED << pte, active_mm, cpu_asid_lock, asid_generation, 
+                              asid_map, active_asids, reserved_asids, 
+                              tlb_flush_pending, cur_idx, mm_context_id, 
+                              ret_check_update_reserved_asid, ret_new_context, 
+                              stack, asid_, cpu_, cpus_, asid, newasid, cpu, 
+                              cpus, task_, asid_n, newasid_, generation, old, 
+                              task_c, asid_c, old_active_asid, task, asid_t >>
+
+after_tlbi(self) == /\ pc[self] = "after_tlbi"
+                    /\ pte' = [pte EXCEPT ![task[self]] = "inval"]
+                    /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
+                    /\ asid_t' = [asid_t EXCEPT ![self] = Head(stack[self]).asid_t]
+                    /\ task' = [task EXCEPT ![self] = Head(stack[self]).task]
+                    /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                     /\ UNCHANGED << tlb, active_mm, cpu_asid_lock, 
                                     asid_generation, asid_map, active_asids, 
                                     reserved_asids, tlb_flush_pending, cur_idx, 
@@ -1013,17 +1115,68 @@ sched_loop(self) == /\ pc[self] = "sched_loop"
                                     ret_check_update_reserved_asid, 
                                     ret_new_context, asid_, cpu_, cpus_, asid, 
                                     newasid, cpu, cpus, task_, asid_n, 
-                                    newasid_, generation, old >>
+                                    newasid_, generation, old, task_c, asid_c, 
+                                    old_active_asid >>
+
+try_to_unmap(self) == pte_clear(self) \/ read_asid(self) \/ tlbi(self)
+                         \/ after_tlbi(self)
+
+ttu_ == /\ pc[TTU] = "ttu_"
+        /\ \E t \in TASKS:
+             /\ /\ stack' = [stack EXCEPT ![TTU] = << [ procedure |->  "try_to_unmap",
+                                                        pc        |->  "ttu_",
+                                                        asid_t    |->  asid_t[TTU],
+                                                        task      |->  task[TTU] ] >>
+                                                    \o stack[TTU]]
+                /\ task' = [task EXCEPT ![TTU] = t]
+             /\ asid_t' = [asid_t EXCEPT ![TTU] = defaultInitValue]
+             /\ pc' = [pc EXCEPT ![TTU] = "pte_clear"]
+        /\ UNCHANGED << tlb, pte, active_mm, cpu_asid_lock, asid_generation, 
+                        asid_map, active_asids, reserved_asids, 
+                        tlb_flush_pending, cur_idx, mm_context_id, 
+                        ret_check_update_reserved_asid, ret_new_context, asid_, 
+                        cpu_, cpus_, asid, newasid, cpu, cpus, task_, asid_n, 
+                        newasid_, generation, old, task_c, asid_c, 
+                        old_active_asid >>
+
+ttu == ttu_
+
+sched_loop(self) == /\ pc[self] = "sched_loop"
+                    /\ \E t \in TASKS:
+                         IF t # ActiveTask(self)
+                            THEN /\ /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "check_and_switch_context",
+                                                                             pc        |->  "sched_loop",
+                                                                             asid_c    |->  asid_c[self],
+                                                                             old_active_asid |->  old_active_asid[self],
+                                                                             task_c    |->  task_c[self] ] >>
+                                                                         \o stack[self]]
+                                    /\ task_c' = [task_c EXCEPT ![self] = t]
+                                 /\ asid_c' = [asid_c EXCEPT ![self] = defaultInitValue]
+                                 /\ old_active_asid' = [old_active_asid EXCEPT ![self] = defaultInitValue]
+                                 /\ pc' = [pc EXCEPT ![self] = "check_and_switch_context_"]
+                            ELSE /\ pc' = [pc EXCEPT ![self] = "sched_loop"]
+                                 /\ UNCHANGED << stack, task_c, asid_c, 
+                                                 old_active_asid >>
+                    /\ UNCHANGED << tlb, pte, active_mm, cpu_asid_lock, 
+                                    asid_generation, asid_map, active_asids, 
+                                    reserved_asids, tlb_flush_pending, cur_idx, 
+                                    mm_context_id, 
+                                    ret_check_update_reserved_asid, 
+                                    ret_new_context, asid_, cpu_, cpus_, asid, 
+                                    newasid, cpu, cpus, task_, asid_n, 
+                                    newasid_, generation, old, task, asid_t >>
 
 sched(self) == sched_loop(self)
 
-Next == (\E self \in ProcSet:  \/ flush_context(self)
-                               \/ check_update_reserved_asid(self)
-                               \/ new_context(self)
-                               \/ check_and_switch_context(self))
+Next == ttu
+           \/ (\E self \in ProcSet:  \/ flush_context(self)
+                                     \/ check_update_reserved_asid(self)
+                                     \/ new_context(self)
+                                     \/ check_and_switch_context(self)
+                                     \/ try_to_unmap(self))
            \/ (\E self \in CPUS: sched(self))
 
 Spec == Init /\ [][Next]_vars
 
-\* END TRANSLATION
+\* END TRANSLATION - the hash of the generated TLA code (remove to silence divergence warnings): TLA-683adfb7ed87d6f2f601f1d0e2b708b9
 ==============================================================================
