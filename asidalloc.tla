@@ -112,6 +112,7 @@ define {
 					/\ ActiveTask(c1) # 0
 					/\ ActiveTask(c2) # 0
 					/\ ActiveTask(c1) # ActiveTask(c2)
+					=> ActiveAsid(c1) # ActiveAsid(c2)
 		\* TLB empty for an active task/ASID following TLBI
 	TLBEmptyTask(task) ==	\A t \in tlb :
 					~(t.task = task /\ t.asid = mm_context_id[task].asid)
@@ -351,22 +352,22 @@ sched_loop:
 	}
 }
 } *)
-\* BEGIN TRANSLATION - the hash of the PCal code: PCal-3b4c8093cab80710385baf7e614083a3
-\* Label flush_context of procedure flush_context at line 181 col 9 changed to flush_context_
-\* Label check_update_reserved_asid of procedure check_update_reserved_asid at line 205 col 9 changed to check_update_reserved_asid_
-\* Label new_context of procedure new_context at line 223 col 9 changed to new_context_
-\* Label check_and_switch_context of procedure check_and_switch_context at line 275 col 9 changed to check_and_switch_context_
-\* Label tlb_flush_pending of procedure check_and_switch_context at line 300 col 9 changed to tlb_flush_pending_
-\* Label ttu of process ttu at line 337 col 9 changed to ttu_
-\* Procedure variable asid of procedure flush_context at line 178 col 19 changed to asid_
-\* Procedure variable cpu of procedure flush_context at line 178 col 25 changed to cpu_
-\* Procedure variable cpus of procedure flush_context at line 178 col 30 changed to cpus_
-\* Procedure variable asid of procedure new_context at line 220 col 19 changed to asid_n
-\* Procedure variable newasid of procedure new_context at line 220 col 25 changed to newasid_
-\* Procedure variable asid of procedure check_and_switch_context at line 271 col 19 changed to asid_c
-\* Procedure variable asid of procedure try_to_unmap at line 319 col 19 changed to asid_t
-\* Parameter task of procedure new_context at line 219 col 23 changed to task_
-\* Parameter task of procedure check_and_switch_context at line 270 col 36 changed to task_c
+\* BEGIN TRANSLATION - the hash of the PCal code: PCal-f21ad0e8c89501fb06f50a5b8b5a9b1f
+\* Label flush_context of procedure flush_context at line 182 col 9 changed to flush_context_
+\* Label check_update_reserved_asid of procedure check_update_reserved_asid at line 206 col 9 changed to check_update_reserved_asid_
+\* Label new_context of procedure new_context at line 224 col 9 changed to new_context_
+\* Label check_and_switch_context of procedure check_and_switch_context at line 276 col 9 changed to check_and_switch_context_
+\* Label tlb_flush_pending of procedure check_and_switch_context at line 301 col 9 changed to tlb_flush_pending_
+\* Label ttu of process ttu at line 338 col 9 changed to ttu_
+\* Procedure variable asid of procedure flush_context at line 179 col 19 changed to asid_
+\* Procedure variable cpu of procedure flush_context at line 179 col 25 changed to cpu_
+\* Procedure variable cpus of procedure flush_context at line 179 col 30 changed to cpus_
+\* Procedure variable asid of procedure new_context at line 221 col 19 changed to asid_n
+\* Procedure variable newasid of procedure new_context at line 221 col 25 changed to newasid_
+\* Procedure variable asid of procedure check_and_switch_context at line 272 col 19 changed to asid_c
+\* Procedure variable asid of procedure try_to_unmap at line 320 col 19 changed to asid_t
+\* Parameter task of procedure new_context at line 220 col 23 changed to task_
+\* Parameter task of procedure check_and_switch_context at line 271 col 36 changed to task_c
 CONSTANT defaultInitValue
 VARIABLES tlb, pte, active_mm, cpu_asid_lock, asid_generation, asid_map, 
           active_asids, reserved_asids, tlb_flush_pending, cur_idx, 
@@ -440,6 +441,7 @@ UniqueASIDActiveTask == \/ ~CnP
                                 /\ ActiveTask(c1) # 0
                                 /\ ActiveTask(c2) # 0
                                 /\ ActiveTask(c1) # ActiveTask(c2)
+                                => ActiveAsid(c1) # ActiveAsid(c2)
 
 TLBEmptyTask(task) ==   \A t \in tlb :
                                 ~(t.task = task /\ t.asid = mm_context_id[task].asid)
@@ -1178,5 +1180,5 @@ Next == ttu
 
 Spec == Init /\ [][Next]_vars
 
-\* END TRANSLATION - the hash of the generated TLA code (remove to silence divergence warnings): TLA-683adfb7ed87d6f2f601f1d0e2b708b9
+\* END TRANSLATION - the hash of the generated TLA code (remove to silence divergence warnings): TLA-071a3790d26807e2a4906e2ce2f9bf7a
 ==============================================================================
