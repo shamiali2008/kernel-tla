@@ -12,8 +12,7 @@ EXTENDS Naturals, Sequences, FiniteSets, TLC
 CONSTANT	CPUS,		\* set of available CPUs
 		VMIDS,		\* number of VMIDs
 		GENERATIONS,	\* number of generations
-		TASKS,		\* set of context ids
-		SCHED_OUT	\* special task modifying the page table
+		TASKS		\* set of context ids
 
 ASSUME	/\ VMIDS \in Nat \ {0}
 	/\ GENERATIONS \in Nat \ {0}
@@ -130,6 +129,12 @@ macro cpu_switch_kvm(t, a) {
 	\* A TLB entry can be speculatively loaded as soon as a new TTBR is set
 	if (t # 0)
 		tlb := tlb \cup {MakeTlbEntry(t, kvm_context_id[t].vmid, self)};
+}
+
+\* vCPU is scheduled out by KVM
+macro vcpu_sched_out() {
+	active_kvm[self].task := 0;
+	active_vmids[self] := INVALID_VMID;
 }
 
 \*
@@ -263,26 +268,6 @@ fast_path:
 	return;
 }
 
-\* vCPU is scheduled out by KVM
-procedure vcpu_sched_out(task)
-	variables vmid;
-{
-clear_active_vmid:
-	active_kvm[self].task := 0;
-	active_vmids[self] := INVALID_VMID;
-	return;
-}
-
-\* Asynchronous process for vCPU schedule out
-process (sched_out = SCHED_OUT)
-{
-sched_out:
-	while (TRUE) {
-		with (t \in TASKS)
-			call vcpu_sched_out(t);
-	}
-}
-
 \* About to run a Guest VM
 process (sched \in CPUS)
 {
@@ -291,25 +276,24 @@ sched_loop:
 		with (t \in TASKS) {
 			if (t # ActiveTask(self))
 				call kvm_arm_vmid_update(t);
+			else
+				vcpu_sched_out();
 		}
 	}
 }
 } *)
 \* BEGIN TRANSLATION - the hash of the PCal code: PCal-f21ad0e8c89501fb06f50a5b8b5a9b1f
-\* Label flush_context of procedure flush_context at line 142 col 9 changed to flush_context_
-\* Label check_update_reserved_vmid of procedure check_update_reserved_vmid at line 166 col 9 changed to check_update_reserved_vmid_
-\* Label new_vmid of procedure new_vmid at line 184 col 9 changed to new_vmid_
-\* Label kvm_arm_vmid_update of procedure kvm_arm_vmid_update at line 235 col 9 changed to kvm_arm_vmid_update_
-\* Label sched_out of process sched_out at line 280 col 9 changed to sched_out_
-\* Procedure variable vmid of procedure flush_context at line 139 col 19 changed to vmid_
-\* Procedure variable cpu of procedure flush_context at line 139 col 25 changed to cpu_
-\* Procedure variable cpus of procedure flush_context at line 139 col 30 changed to cpus_
-\* Procedure variable vmid of procedure new_vmid at line 181 col 19 changed to vmid_n
-\* Procedure variable newvmid of procedure new_vmid at line 181 col 25 changed to newvmid_
-\* Procedure variable vmid of procedure kvm_arm_vmid_update at line 232 col 19 changed to vmid_k
-\* Procedure variable vmid of procedure vcpu_sched_out at line 268 col 19 changed to vmid_v
-\* Parameter task of procedure new_vmid at line 180 col 20 changed to task_
-\* Parameter task of procedure kvm_arm_vmid_update at line 231 col 31 changed to task_k
+\* Label flush_context of procedure flush_context at line 147 col 9 changed to flush_context_
+\* Label check_update_reserved_vmid of procedure check_update_reserved_vmid at line 171 col 9 changed to check_update_reserved_vmid_
+\* Label new_vmid of procedure new_vmid at line 189 col 9 changed to new_vmid_
+\* Label kvm_arm_vmid_update of procedure kvm_arm_vmid_update at line 240 col 9 changed to kvm_arm_vmid_update_
+\* Procedure variable vmid of procedure flush_context at line 144 col 19 changed to vmid_
+\* Procedure variable cpu of procedure flush_context at line 144 col 25 changed to cpu_
+\* Procedure variable cpus of procedure flush_context at line 144 col 30 changed to cpus_
+\* Procedure variable vmid of procedure new_vmid at line 186 col 19 changed to vmid_n
+\* Procedure variable newvmid of procedure new_vmid at line 186 col 25 changed to newvmid_
+\* Procedure variable vmid of procedure kvm_arm_vmid_update at line 237 col 19 changed to vmid_k
+\* Parameter task of procedure new_vmid at line 185 col 20 changed to task_
 CONSTANT defaultInitValue
 VARIABLES tlb, active_kvm, cpu_vmid_lock, vmid_generation, vmid_map, 
           active_vmids, reserved_vmids, cur_idx, kvm_context_id, 
@@ -372,14 +356,13 @@ Perms == Permutations(CPUS) \cup Permutations(TASKS)
 Constr == vmid_generation <= GENERATIONS
 
 VARIABLES vmid_, cpu_, cpus_, vmid, newvmid, cpu, cpus, task_, vmid_n, 
-          newvmid_, generation, old, task_k, vmid_k, old_active_vmid, task, 
-          vmid_v
+          newvmid_, generation, old, task, vmid_k, old_active_vmid
 
 global_vars == << vmid_generation, active_vmids, cpu_vmid_lock, reserved_vmids, cur_idx, tlb, ret_new_vmid, kvm_context_id, ret_check_update_reserved_vmid, active_kvm, vmid_map >>
-local_vars == << vmid_v, task_, vmid_k, cpu_, generation, cpus_, vmid, vmid_, newvmid_, vmid_n, task_k, task, old, cpus, cpu, newvmid, old_active_vmid >>
+local_vars == << task_, vmid_k, cpu_, generation, cpus_, vmid, vmid_, newvmid_, vmid_n, task, old, cpus, cpu, newvmid, old_active_vmid >>
 vars == << global_vars, local_vars, pc, stack >>
 
-ProcSet == {SCHED_OUT} \cup (CPUS)
+ProcSet == (CPUS)
 
 Init == (* Global variables *)
         /\ tlb = {}
@@ -409,15 +392,11 @@ Init == (* Global variables *)
         /\ generation = [ self \in ProcSet |-> defaultInitValue]
         /\ old = [ self \in ProcSet |-> defaultInitValue]
         (* Procedure kvm_arm_vmid_update *)
-        /\ task_k = [ self \in ProcSet |-> 0]
+        /\ task = [ self \in ProcSet |-> 0]
         /\ vmid_k = [ self \in ProcSet |-> defaultInitValue]
         /\ old_active_vmid = [ self \in ProcSet |-> defaultInitValue]
-        (* Procedure vcpu_sched_out *)
-        /\ task = [ self \in ProcSet |-> defaultInitValue]
-        /\ vmid_v = [ self \in ProcSet |-> defaultInitValue]
         /\ stack = [self \in ProcSet |-> << >>]
-        /\ pc = [self \in ProcSet |-> CASE self = SCHED_OUT -> "sched_out_"
-                                        [] self \in CPUS -> "sched_loop"]
+        /\ pc = [self \in ProcSet |-> "sched_loop"]
 
 flush_context_(self) == /\ pc[self] = "flush_context_"
                         /\ vmid_map' = [i \in 0..VMIDS-1 |-> FALSE]
@@ -430,8 +409,8 @@ flush_context_(self) == /\ pc[self] = "flush_context_"
                                         ret_check_update_reserved_vmid, 
                                         ret_new_vmid, stack, vmid_, cpu_, vmid, 
                                         newvmid, cpu, cpus, task_, vmid_n, 
-                                        newvmid_, generation, old, task_k, 
-                                        vmid_k, old_active_vmid, task, vmid_v >>
+                                        newvmid_, generation, old, task, 
+                                        vmid_k, old_active_vmid >>
 
 flush_context_for_each_cpu(self) == /\ pc[self] = "flush_context_for_each_cpu"
                                     /\ IF cpus_[self] # {}
@@ -457,9 +436,8 @@ flush_context_for_each_cpu(self) == /\ pc[self] = "flush_context_for_each_cpu"
                                                     ret_new_vmid, vmid, 
                                                     newvmid, cpu, cpus, task_, 
                                                     vmid_n, newvmid_, 
-                                                    generation, old, task_k, 
-                                                    vmid_k, old_active_vmid, 
-                                                    task, vmid_v >>
+                                                    generation, old, task, 
+                                                    vmid_k, old_active_vmid >>
 
 flush_context_vmid0_check(self) == /\ pc[self] = "flush_context_vmid0_check"
                                    /\ IF vmid_[self] = NULL_VMID
@@ -479,9 +457,8 @@ flush_context_vmid0_check(self) == /\ pc[self] = "flush_context_vmid0_check"
                                                    ret_new_vmid, stack, cpu_, 
                                                    vmid, newvmid, cpu, cpus, 
                                                    task_, vmid_n, newvmid_, 
-                                                   generation, old, task_k, 
-                                                   vmid_k, old_active_vmid, 
-                                                   task, vmid_v >>
+                                                   generation, old, task, 
+                                                   vmid_k, old_active_vmid >>
 
 flush_context(self) == flush_context_(self)
                           \/ flush_context_for_each_cpu(self)
@@ -501,9 +478,8 @@ check_update_reserved_vmid_(self) == /\ pc[self] = "check_update_reserved_vmid_"
                                                      vmid_, cpu_, cpus_, vmid, 
                                                      newvmid, cpu, task_, 
                                                      vmid_n, newvmid_, 
-                                                     generation, old, task_k, 
-                                                     vmid_k, old_active_vmid, 
-                                                     task, vmid_v >>
+                                                     generation, old, task, 
+                                                     vmid_k, old_active_vmid >>
 
 check_update_reserved_vmid_for_each_cpu(self) == /\ pc[self] = "check_update_reserved_vmid_for_each_cpu"
                                                  /\ IF cpus[self] # {}
@@ -541,10 +517,9 @@ check_update_reserved_vmid_for_each_cpu(self) == /\ pc[self] = "check_update_res
                                                                  vmid_n, 
                                                                  newvmid_, 
                                                                  generation, 
-                                                                 old, task_k, 
+                                                                 old, task, 
                                                                  vmid_k, 
-                                                                 old_active_vmid, 
-                                                                 task, vmid_v >>
+                                                                 old_active_vmid >>
 
 check_update_reserved_vmid(self) == check_update_reserved_vmid_(self)
                                        \/ check_update_reserved_vmid_for_each_cpu(self)
@@ -574,8 +549,7 @@ new_vmid_(self) == /\ pc[self] = "new_vmid_"
                                    reserved_vmids, cur_idx, kvm_context_id, 
                                    ret_check_update_reserved_vmid, 
                                    ret_new_vmid, vmid_, cpu_, cpus_, task_, 
-                                   old, task_k, vmid_k, old_active_vmid, task, 
-                                   vmid_v >>
+                                   old, task, vmid_k, old_active_vmid >>
 
 new_vmid_ret_from_check_update_reserved_vmid(self) == /\ pc[self] = "new_vmid_ret_from_check_update_reserved_vmid"
                                                       /\ IF ret_check_update_reserved_vmid[self]
@@ -612,11 +586,9 @@ new_vmid_ret_from_check_update_reserved_vmid(self) == /\ pc[self] = "new_vmid_re
                                                                       newvmid, 
                                                                       cpu, 
                                                                       cpus, 
-                                                                      task_k, 
-                                                                      vmid_k, 
-                                                                      old_active_vmid, 
                                                                       task, 
-                                                                      vmid_v >>
+                                                                      vmid_k, 
+                                                                      old_active_vmid >>
 
 new_vmid_ret_from_check_update_reserved_vmid_end(self) == /\ pc[self] = "new_vmid_ret_from_check_update_reserved_vmid_end"
                                                           /\ old' = [old EXCEPT ![self] = vmid_map[vmid_n[self].vmid]]
@@ -647,11 +619,9 @@ new_vmid_ret_from_check_update_reserved_vmid_end(self) == /\ pc[self] = "new_vmi
                                                                           vmid_n, 
                                                                           newvmid_, 
                                                                           generation, 
-                                                                          task_k, 
-                                                                          vmid_k, 
-                                                                          old_active_vmid, 
                                                                           task, 
-                                                                          vmid_v >>
+                                                                          vmid_k, 
+                                                                          old_active_vmid >>
 
 new_vmid_return(self) == /\ pc[self] = "new_vmid_return"
                          /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
@@ -667,8 +637,8 @@ new_vmid_return(self) == /\ pc[self] = "new_vmid_return"
                                          kvm_context_id, 
                                          ret_check_update_reserved_vmid, 
                                          ret_new_vmid, vmid_, cpu_, cpus_, 
-                                         vmid, newvmid, cpu, cpus, task_k, 
-                                         vmid_k, old_active_vmid, task, vmid_v >>
+                                         vmid, newvmid, cpu, cpus, task, 
+                                         vmid_k, old_active_vmid >>
 
 new_vmid_allocate_free_vmid(self) == /\ pc[self] = "new_vmid_allocate_free_vmid"
                                      /\ IF EmptySlots(vmid_map, cur_idx)
@@ -687,9 +657,8 @@ new_vmid_allocate_free_vmid(self) == /\ pc[self] = "new_vmid_allocate_free_vmid"
                                                      vmid_, cpu_, cpus_, vmid, 
                                                      newvmid, cpu, cpus, task_, 
                                                      newvmid_, generation, old, 
-                                                     task_k, vmid_k, 
-                                                     old_active_vmid, task, 
-                                                     vmid_v >>
+                                                     task, vmid_k, 
+                                                     old_active_vmid >>
 
 new_vmid_out_of_vmids(self) == /\ pc[self] = "new_vmid_out_of_vmids"
                                /\ vmid_generation' = vmid_generation + 1
@@ -711,8 +680,8 @@ new_vmid_out_of_vmids(self) == /\ pc[self] = "new_vmid_out_of_vmids"
                                                ret_check_update_reserved_vmid, 
                                                ret_new_vmid, vmid, newvmid, 
                                                cpu, cpus, task_, vmid_n, 
-                                               newvmid_, old, task_k, vmid_k, 
-                                               old_active_vmid, task, vmid_v >>
+                                               newvmid_, old, task, vmid_k, 
+                                               old_active_vmid >>
 
 new_vmid_ret_flush_context(self) == /\ pc[self] = "new_vmid_ret_flush_context"
                                     /\ vmid_n' = [vmid_n EXCEPT ![self].vmid = FindEmptySlot(vmid_map, 1)]
@@ -727,9 +696,8 @@ new_vmid_ret_flush_context(self) == /\ pc[self] = "new_vmid_ret_flush_context"
                                                     ret_new_vmid, stack, vmid_, 
                                                     cpu_, cpus_, vmid, newvmid, 
                                                     cpu, cpus, task_, newvmid_, 
-                                                    generation, old, task_k, 
-                                                    vmid_k, old_active_vmid, 
-                                                    task, vmid_v >>
+                                                    generation, old, task, 
+                                                    vmid_k, old_active_vmid >>
 
 set_vmid(self) == /\ pc[self] = "set_vmid"
                   /\ vmid_map' = [vmid_map EXCEPT ![vmid_n[self].vmid] = TRUE]
@@ -746,8 +714,8 @@ set_vmid(self) == /\ pc[self] = "set_vmid"
                                   vmid_generation, active_vmids, 
                                   reserved_vmids, kvm_context_id, 
                                   ret_check_update_reserved_vmid, vmid_, cpu_, 
-                                  cpus_, vmid, newvmid, cpu, cpus, task_k, 
-                                  vmid_k, old_active_vmid, task, vmid_v >>
+                                  cpus_, vmid, newvmid, cpu, cpus, task, 
+                                  vmid_k, old_active_vmid >>
 
 new_vmid(self) == new_vmid_(self)
                      \/ new_vmid_ret_from_check_update_reserved_vmid(self)
@@ -758,7 +726,7 @@ new_vmid(self) == new_vmid_(self)
                      \/ new_vmid_ret_flush_context(self) \/ set_vmid(self)
 
 kvm_arm_vmid_update_(self) == /\ pc[self] = "kvm_arm_vmid_update_"
-                              /\ vmid_k' = [vmid_k EXCEPT ![self] = kvm_context_id[task_k[self]]]
+                              /\ vmid_k' = [vmid_k EXCEPT ![self] = kvm_context_id[task[self]]]
                               /\ old_active_vmid' = [old_active_vmid EXCEPT ![self] = active_vmids[self]]
                               /\ pc' = [pc EXCEPT ![self] = "check_current_generation"]
                               /\ UNCHANGED << tlb, active_kvm, cpu_vmid_lock, 
@@ -769,8 +737,7 @@ kvm_arm_vmid_update_(self) == /\ pc[self] = "kvm_arm_vmid_update_"
                                               ret_new_vmid, stack, vmid_, cpu_, 
                                               cpus_, vmid, newvmid, cpu, cpus, 
                                               task_, vmid_n, newvmid_, 
-                                              generation, old, task_k, task, 
-                                              vmid_v >>
+                                              generation, old, task >>
 
 check_current_generation(self) == /\ pc[self] = "check_current_generation"
                                   /\ IF old_active_vmid[self] # NULL_VMID /\ vmid_k[self].generation = vmid_generation
@@ -786,9 +753,8 @@ check_current_generation(self) == /\ pc[self] = "check_current_generation"
                                                   cpu_, cpus_, vmid, newvmid, 
                                                   cpu, cpus, task_, vmid_n, 
                                                   newvmid_, generation, old, 
-                                                  task_k, vmid_k, 
-                                                  old_active_vmid, task, 
-                                                  vmid_v >>
+                                                  task, vmid_k, 
+                                                  old_active_vmid >>
 
 cmpxchg_active_vmids(self) == /\ pc[self] = "cmpxchg_active_vmids"
                               /\ IF (active_vmids[self]) = old_active_vmid[self]
@@ -805,8 +771,7 @@ cmpxchg_active_vmids(self) == /\ pc[self] = "cmpxchg_active_vmids"
                                               ret_new_vmid, stack, vmid_, cpu_, 
                                               cpus_, vmid, newvmid, cpu, cpus, 
                                               task_, vmid_n, newvmid_, 
-                                              generation, old, task_k, vmid_k, 
-                                              task, vmid_v >>
+                                              generation, old, task, vmid_k >>
 
 check_roll_over(self) == /\ pc[self] = "check_roll_over"
                          /\ IF old_active_vmid[self] # NULL_VMID
@@ -820,13 +785,12 @@ check_roll_over(self) == /\ pc[self] = "check_roll_over"
                                          ret_new_vmid, stack, vmid_, cpu_, 
                                          cpus_, vmid, newvmid, cpu, cpus, 
                                          task_, vmid_n, newvmid_, generation, 
-                                         old, task_k, vmid_k, old_active_vmid, 
-                                         task, vmid_v >>
+                                         old, task, vmid_k, old_active_vmid >>
 
 slow_path(self) == /\ pc[self] = "slow_path"
                    /\ ~cpu_vmid_lock
                    /\ cpu_vmid_lock' = TRUE
-                   /\ vmid_k' = [vmid_k EXCEPT ![self] = kvm_context_id[task_k[self]]]
+                   /\ vmid_k' = [vmid_k EXCEPT ![self] = kvm_context_id[task[self]]]
                    /\ IF vmid_k'[self].generation # vmid_generation
                          THEN /\ /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "new_vmid",
                                                                           pc        |->  "kvm_arm_vmid_update_ret_new_vmid",
@@ -836,7 +800,7 @@ slow_path(self) == /\ pc[self] = "slow_path"
                                                                           old       |->  old[self],
                                                                           task_     |->  task_[self] ] >>
                                                                       \o stack[self]]
-                                 /\ task_' = [task_ EXCEPT ![self] = task_k[self]]
+                                 /\ task_' = [task_ EXCEPT ![self] = task[self]]
                               /\ vmid_n' = [vmid_n EXCEPT ![self] = defaultInitValue]
                               /\ newvmid_' = [newvmid_ EXCEPT ![self] = defaultInitValue]
                               /\ generation' = [generation EXCEPT ![self] = defaultInitValue]
@@ -850,12 +814,11 @@ slow_path(self) == /\ pc[self] = "slow_path"
                                    kvm_context_id, 
                                    ret_check_update_reserved_vmid, 
                                    ret_new_vmid, vmid_, cpu_, cpus_, vmid, 
-                                   newvmid, cpu, cpus, task_k, old_active_vmid, 
-                                   task, vmid_v >>
+                                   newvmid, cpu, cpus, task, old_active_vmid >>
 
 kvm_arm_vmid_update_ret_new_vmid(self) == /\ pc[self] = "kvm_arm_vmid_update_ret_new_vmid"
                                           /\ vmid_k' = [vmid_k EXCEPT ![self] = ret_new_vmid[self]]
-                                          /\ kvm_context_id' = [kvm_context_id EXCEPT ![task_k[self]] = vmid_k'[self]]
+                                          /\ kvm_context_id' = [kvm_context_id EXCEPT ![task[self]] = vmid_k'[self]]
                                           /\ pc' = [pc EXCEPT ![self] = "set_active_vmids"]
                                           /\ UNCHANGED << tlb, active_kvm, 
                                                           cpu_vmid_lock, 
@@ -870,9 +833,8 @@ kvm_arm_vmid_update_ret_new_vmid(self) == /\ pc[self] = "kvm_arm_vmid_update_ret
                                                           vmid, newvmid, cpu, 
                                                           cpus, task_, vmid_n, 
                                                           newvmid_, generation, 
-                                                          old, task_k, 
-                                                          old_active_vmid, 
-                                                          task, vmid_v >>
+                                                          old, task, 
+                                                          old_active_vmid >>
 
 set_active_vmids(self) == /\ pc[self] = "set_active_vmids"
                           /\ active_vmids' = [active_vmids EXCEPT ![self] = vmid_k[self]]
@@ -885,20 +847,19 @@ set_active_vmids(self) == /\ pc[self] = "set_active_vmids"
                                           ret_new_vmid, stack, vmid_, cpu_, 
                                           cpus_, vmid, newvmid, cpu, cpus, 
                                           task_, vmid_n, newvmid_, generation, 
-                                          old, task_k, vmid_k, old_active_vmid, 
-                                          task, vmid_v >>
+                                          old, task, vmid_k, old_active_vmid >>
 
 fast_path(self) == /\ pc[self] = "fast_path"
-                   /\ active_kvm' = [active_kvm EXCEPT ![self].task = task_k[self],
+                   /\ active_kvm' = [active_kvm EXCEPT ![self].task = task[self],
                                                        ![self].vmid = vmid_k[self].vmid]
-                   /\ IF task_k[self] # 0
-                         THEN /\ tlb' = (tlb \cup {MakeTlbEntry(task_k[self], kvm_context_id[task_k[self]].vmid, self)})
+                   /\ IF task[self] # 0
+                         THEN /\ tlb' = (tlb \cup {MakeTlbEntry(task[self], kvm_context_id[task[self]].vmid, self)})
                          ELSE /\ TRUE
                               /\ tlb' = tlb
                    /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                    /\ vmid_k' = [vmid_k EXCEPT ![self] = Head(stack[self]).vmid_k]
                    /\ old_active_vmid' = [old_active_vmid EXCEPT ![self] = Head(stack[self]).old_active_vmid]
-                   /\ task_k' = [task_k EXCEPT ![self] = Head(stack[self]).task_k]
+                   /\ task' = [task EXCEPT ![self] = Head(stack[self]).task]
                    /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                    /\ UNCHANGED << cpu_vmid_lock, vmid_generation, vmid_map, 
                                    active_vmids, reserved_vmids, cur_idx, 
@@ -906,7 +867,7 @@ fast_path(self) == /\ pc[self] = "fast_path"
                                    ret_check_update_reserved_vmid, 
                                    ret_new_vmid, vmid_, cpu_, cpus_, vmid, 
                                    newvmid, cpu, cpus, task_, vmid_n, newvmid_, 
-                                   generation, old, task, vmid_v >>
+                                   generation, old >>
 
 kvm_arm_vmid_update(self) == kvm_arm_vmid_update_(self)
                                 \/ check_current_generation(self)
@@ -916,43 +877,6 @@ kvm_arm_vmid_update(self) == kvm_arm_vmid_update_(self)
                                 \/ set_active_vmids(self)
                                 \/ fast_path(self)
 
-clear_active_vmid(self) == /\ pc[self] = "clear_active_vmid"
-                           /\ active_kvm' = [active_kvm EXCEPT ![self].task = 0]
-                           /\ active_vmids' = [active_vmids EXCEPT ![self] = INVALID_VMID]
-                           /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
-                           /\ vmid_v' = [vmid_v EXCEPT ![self] = Head(stack[self]).vmid_v]
-                           /\ task' = [task EXCEPT ![self] = Head(stack[self]).task]
-                           /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                           /\ UNCHANGED << tlb, cpu_vmid_lock, vmid_generation, 
-                                           vmid_map, reserved_vmids, cur_idx, 
-                                           kvm_context_id, 
-                                           ret_check_update_reserved_vmid, 
-                                           ret_new_vmid, vmid_, cpu_, cpus_, 
-                                           vmid, newvmid, cpu, cpus, task_, 
-                                           vmid_n, newvmid_, generation, old, 
-                                           task_k, vmid_k, old_active_vmid >>
-
-vcpu_sched_out(self) == clear_active_vmid(self)
-
-sched_out_ == /\ pc[SCHED_OUT] = "sched_out_"
-              /\ \E t \in TASKS:
-                   /\ /\ stack' = [stack EXCEPT ![SCHED_OUT] = << [ procedure |->  "vcpu_sched_out",
-                                                                    pc        |->  "sched_out_",
-                                                                    vmid_v    |->  vmid_v[SCHED_OUT],
-                                                                    task      |->  task[SCHED_OUT] ] >>
-                                                                \o stack[SCHED_OUT]]
-                      /\ task' = [task EXCEPT ![SCHED_OUT] = t]
-                   /\ vmid_v' = [vmid_v EXCEPT ![SCHED_OUT] = defaultInitValue]
-                   /\ pc' = [pc EXCEPT ![SCHED_OUT] = "clear_active_vmid"]
-              /\ UNCHANGED << tlb, active_kvm, cpu_vmid_lock, vmid_generation, 
-                              vmid_map, active_vmids, reserved_vmids, cur_idx, 
-                              kvm_context_id, ret_check_update_reserved_vmid, 
-                              ret_new_vmid, vmid_, cpu_, cpus_, vmid, newvmid, 
-                              cpu, cpus, task_, vmid_n, newvmid_, generation, 
-                              old, task_k, vmid_k, old_active_vmid >>
-
-sched_out == sched_out_
-
 sched_loop(self) == /\ pc[self] = "sched_loop"
                     /\ \E t \in TASKS:
                          IF t # ActiveTask(self)
@@ -960,31 +884,32 @@ sched_loop(self) == /\ pc[self] = "sched_loop"
                                                                              pc        |->  "sched_loop",
                                                                              vmid_k    |->  vmid_k[self],
                                                                              old_active_vmid |->  old_active_vmid[self],
-                                                                             task_k    |->  task_k[self] ] >>
+                                                                             task      |->  task[self] ] >>
                                                                          \o stack[self]]
-                                    /\ task_k' = [task_k EXCEPT ![self] = t]
+                                    /\ task' = [task EXCEPT ![self] = t]
                                  /\ vmid_k' = [vmid_k EXCEPT ![self] = defaultInitValue]
                                  /\ old_active_vmid' = [old_active_vmid EXCEPT ![self] = defaultInitValue]
                                  /\ pc' = [pc EXCEPT ![self] = "kvm_arm_vmid_update_"]
-                            ELSE /\ pc' = [pc EXCEPT ![self] = "sched_loop"]
-                                 /\ UNCHANGED << stack, task_k, vmid_k, 
+                                 /\ UNCHANGED << active_kvm, active_vmids >>
+                            ELSE /\ active_kvm' = [active_kvm EXCEPT ![self].task = 0]
+                                 /\ active_vmids' = [active_vmids EXCEPT ![self] = INVALID_VMID]
+                                 /\ pc' = [pc EXCEPT ![self] = "sched_loop"]
+                                 /\ UNCHANGED << stack, task, vmid_k, 
                                                  old_active_vmid >>
-                    /\ UNCHANGED << tlb, active_kvm, cpu_vmid_lock, 
-                                    vmid_generation, vmid_map, active_vmids, 
-                                    reserved_vmids, cur_idx, kvm_context_id, 
+                    /\ UNCHANGED << tlb, cpu_vmid_lock, vmid_generation, 
+                                    vmid_map, reserved_vmids, cur_idx, 
+                                    kvm_context_id, 
                                     ret_check_update_reserved_vmid, 
                                     ret_new_vmid, vmid_, cpu_, cpus_, vmid, 
                                     newvmid, cpu, cpus, task_, vmid_n, 
-                                    newvmid_, generation, old, task, vmid_v >>
+                                    newvmid_, generation, old >>
 
 sched(self) == sched_loop(self)
 
-Next == sched_out
-           \/ (\E self \in ProcSet:  \/ flush_context(self)
-                                     \/ check_update_reserved_vmid(self)
-                                     \/ new_vmid(self)
-                                     \/ kvm_arm_vmid_update(self)
-                                     \/ vcpu_sched_out(self))
+Next == (\E self \in ProcSet:  \/ flush_context(self)
+                               \/ check_update_reserved_vmid(self)
+                               \/ new_vmid(self)
+                               \/ kvm_arm_vmid_update(self))
            \/ (\E self \in CPUS: sched(self))
 
 Spec == Init /\ [][Next]_vars
